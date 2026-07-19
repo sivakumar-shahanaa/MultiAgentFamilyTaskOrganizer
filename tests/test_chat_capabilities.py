@@ -41,11 +41,13 @@ def test_child_can_read_schedule_from_chat(client, monkeypatch) -> None:
     person_id = _admit(client, "Child Two", "Child", "spencer")
 
     async def fake_run_turn(*args, **kwargs):
-        return await _propose("read_schedule")
+        return ProposedAction(action="read_schedule", params={}, reply="You have meetings all day today.")
 
     monkeypatch.setattr(main, "run_turn", fake_run_turn)
     response = client.post("/chat/message", data={"person_id": person_id, "message": "What's on the schedule?"})
 
+    assert "You don&#x27;t have anything scheduled." in response.text
+    assert "meetings all day" not in response.text
     assert "Action executed: read_schedule" in response.text
 
 

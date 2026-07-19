@@ -176,8 +176,15 @@ async def chat_message(request: Request):
             message,
             [{"role": item.role, "content": item.content} for item in session.messages],
         )
-        action_note = _execute_proposed_action(person, proposed_action.action, proposed_action.params)
-        assistant_message = ChatMessage(role="assistant", content=proposed_action.reply + action_note)
+        assistant_message = ChatMessage(
+            role="assistant",
+            content=_final_reply_for_proposed_action(
+                person,
+                proposed_action.action,
+                proposed_action.params,
+                proposed_action.reply,
+            ),
+        )
     except ModelAPIError:
         assistant_message = ChatMessage(
             role="assistant",
@@ -453,9 +460,14 @@ def _chat_page(person: Person, session: ChatSession) -> str:
     )
 
 
-def _execute_proposed_action(person: Person, action_type: str, params: dict) -> str:
+def _final_reply_for_proposed_action(
+    person: Person,
+    action_type: str,
+    params: dict,
+    proposed_reply: str,
+) -> str:
     if action_type == "none":
-        return ""
+        return proposed_reply
 
     permission_scope = _permission_scope_for_role(person.role)
     with Session(household_engine) as session:
@@ -463,9 +475,27 @@ def _execute_proposed_action(person: Person, action_type: str, params: dict) -> 
         result = run_action(action_type, params) if decision == "allow" else None
         log_action(session, person.id, action_type, params, decision)
 
-    if decision == "allow":
-        return f"\n\nAction executed: {action_type} → {result}"
-    return f"\n\nAction {decision}: {action_type}"
+    if decision != "allow":
+        return f"I can't do that for your role.\n\nAction {decision}: {action_type}"
+
+    if action_type == "read_schedule":
+        events = result.get("events", []) if isinstance(result, dict) else []
+        if not events:
+            return f"You don't have anything scheduled.\n\nAction executed: {action_type} → {result}"
+        event_titles = ", ".join(str(event.get("title", "Untitled")) for event in events)
+        return f"Your scheduled events are: {event_titles}.\n\nAction executed: {action_type} → {result}"
+
+    if action_type == "weather" and isinstance(result, dict):
+        return (
+            f"It's {result.get('condition')} and {result.get('temp_f')}°F in "
+            f"{result.get('location')}. {result.get('advice')}.\n\n"
+            f"Action executed: {action_type} → {result}"
+        )
+
+    if action_type == "spotify_play" and isinstance(result, dict):
+        return f"Playing {result.get('now_playing')}.\n\nAction executed: {action_type} → {result}"
+
+    return f"{proposed_reply}\n\nAction executed: {action_type} → {result}"
 
 
 def _permission_scope_for_role(role: Role) -> str:
