@@ -130,7 +130,7 @@ def add_to_queue(track_uri: str, access_token: str, device_id: str | None = None
             params=params,
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        return response.status_code == 204
+        return 200 <= response.status_code < 300
 
 
 def _now() -> datetime:
