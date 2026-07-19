@@ -58,6 +58,34 @@ curl -X PATCH http://localhost:8000/users/me \
   -d '{"persona_prompt":"Be warm and detailed."}'
 ```
 
+## Spotify setup
+
+Spotify playback uses one shared household Spotify connection.
+
+1. Create a Spotify app at <https://developer.spotify.com/dashboard>.
+2. In the Spotify app settings, add this redirect URI exactly:
+
+```text
+http://127.0.0.1:8000/spotify/callback
+```
+
+3. Copy the Spotify app's client ID and client secret into `.env`:
+
+```env
+SPOTIFY_CLIENT_ID=your_client_id
+SPOTIFY_CLIENT_SECRET=your_client_secret
+SPOTIFY_REDIRECT_URI=http://127.0.0.1:8000/spotify/callback
+```
+
+4. Restart the FastAPI app.
+5. Open this URL once and approve Spotify access:
+
+```text
+http://localhost:8000/spotify/login
+```
+
+6. Open Spotify on a phone or desktop before asking the assistant to play music. Spotify must see an available device for queueing/playback to work.
+
 ## Configuration
 
 Set these in `.env`:
@@ -66,3 +94,6 @@ Set these in `.env`:
 - `LOCAL_LLM_API_KEY` defaults to `ollama`
 - `LOCAL_LLM_MODEL` defaults to `llama3.2`
 - `DATABASE_URL` defaults to `sqlite:///./app.db`
+- `SPOTIFY_CLIENT_ID` from your Spotify developer app
+- `SPOTIFY_CLIENT_SECRET` from your Spotify developer app
+- `SPOTIFY_REDIRECT_URI` should match the Spotify dashboard redirect URI
