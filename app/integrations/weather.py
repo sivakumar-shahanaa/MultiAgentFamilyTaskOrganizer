@@ -1,3 +1,5 @@
+from sqlmodel import Session
+
 from app.integrations.base import Integration
 
 
@@ -6,7 +8,7 @@ class WeatherIntegration(Integration):
     real OpenWeather (or similar) call later -- keep the return shape.
     """
 
-    def execute(self, params: dict) -> dict:
+    async def execute(self, params: dict, session: Session) -> dict:
         location = params.get("location", "home")
         return {
             "location": location,

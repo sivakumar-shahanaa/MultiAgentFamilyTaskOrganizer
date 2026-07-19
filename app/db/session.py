@@ -1,9 +1,10 @@
-"""Shared database session for household capability routes.
+from sqlmodel import SQLModel, Session, create_engine
+DATABASE_URL = "sqlite:///household.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 
-This module intentionally re-exports the unified app database engine/session so
-Sahana's capability models live in the same SQLite DB as identity and chat.
-"""
+def init_db() -> None:
+    SQLModel.metadata.create_all(engine)
 
-from app.db import engine, get_session, init_db
-
-__all__ = ["engine", "get_session", "init_db"]
+def get_session():
+    with Session(engine) as session:
+        yield session

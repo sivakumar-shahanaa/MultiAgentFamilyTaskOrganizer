@@ -5,27 +5,30 @@ from app.models import Profile, PermissionRule
 
 
 DEFAULT_PROFILES = [
-    {"id": "parent_1", "persona": "parent", "display_name": "Parent"},
-    {"id": "kid_1", "persona": "kid", "display_name": "Kid"},
-    {"id": "guest_1", "persona": "guest", "display_name": "Guest"},
+    Profile(id="parent_1", persona="parent", display_name="Parent"),
+    Profile(id="kid_1", persona="kid", display_name="Kid"),
+    Profile(id="guest_1", persona="guest", display_name="Guest"),
 ]
 
 DEFAULT_RULES = [
     # persona, action_type, decision
+    ("parent", "send_email", "allow"),
+    ("parent", "reschedule_calendar", "allow"),
+    ("parent", "spotify_create_jam", "allow"),
+    ("parent", "spotify_add_to_jam", "allow"),
     ("parent", "weather", "allow"),
-    ("parent", "spotify_play", "allow"),
-    ("parent", "read_schedule", "allow"),
-    ("parent", "write_schedule", "allow"),
 
+    ("kid", "send_email", "escalate"),
+    ("kid", "reschedule_calendar", "escalate"),
+    ("kid", "spotify_create_jam", "deny"),
+    ("kid", "spotify_add_to_jam", "allow"),
     ("kid", "weather", "allow"),
-    ("kid", "spotify_play", "allow"),
-    ("kid", "read_schedule", "allow"),
-    ("kid", "write_schedule", "deny"),
 
+    ("guest", "send_email", "deny"),
+    ("guest", "reschedule_calendar", "deny"),
+    ("guest", "spotify_create_jam", "deny"),
+    ("guest", "spotify_add_to_jam", "allow"),
     ("guest", "weather", "allow"),
-    ("guest", "spotify_play", "allow"),
-    ("guest", "read_schedule", "deny"),
-    ("guest", "write_schedule", "deny"),
 ]
 
 
@@ -33,9 +36,9 @@ def seed() -> None:
     init_db()
     with Session(engine) as session:
         for profile in DEFAULT_PROFILES:
-            existing = session.get(Profile, profile["id"])
+            existing = session.get(Profile, profile.id)
             if not existing:
-                session.add(Profile(**profile))
+                session.add(profile)
 
         for persona, action_type, decision in DEFAULT_RULES:
             stmt = select(PermissionRule).where(
@@ -43,10 +46,7 @@ def seed() -> None:
                 PermissionRule.action_type == action_type,
             )
             existing = session.exec(stmt).first()
-            if existing:
-                existing.decision = decision
-                session.add(existing)
-            else:
+            if not existing:
                 session.add(
                     PermissionRule(
                         persona=persona,

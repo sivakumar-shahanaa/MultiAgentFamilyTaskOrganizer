@@ -1,23 +1,21 @@
+from sqlmodel import Session
+
 from app.integrations.weather import WeatherIntegration
 from app.integrations.calendar import CalendarIntegration
-from app.integrations.spotify import SpotifyIntegration
+from app.integrations.spotify import JamStore, SpotifyCreateJamIntegration, SpotifyAddToJamIntegration
+
+_jam_store = JamStore()  # shared so create and add-to see the same jams
 
 INTEGRATIONS = {
     "weather": WeatherIntegration(),
-    "read_schedule": CalendarIntegration(),
-    "write_schedule": CalendarIntegration(),
-    "spotify_play": SpotifyIntegration(),
+    "reschedule_calendar": CalendarIntegration(),
+    "spotify_create_jam": SpotifyCreateJamIntegration(_jam_store),
+    "spotify_add_to_jam": SpotifyAddToJamIntegration(_jam_store),
 }
 
 
-def run_action(action_type: str, params: dict) -> dict:
+async def run_action(action_type: str, params: dict, session: Session) -> dict:
     integration = INTEGRATIONS.get(action_type)
     if integration is None:
         return {"status": "error", "message": f"no integration for '{action_type}'"}
-
-    if action_type == "read_schedule":
-        params = {**params, "action": "list"}
-    if params.get("action") == "error":
-        return {"status": "error", "message": params.get("message", "invalid action params")}
-
-    return integration.execute(params)
+    return await integration.execute(params, session)

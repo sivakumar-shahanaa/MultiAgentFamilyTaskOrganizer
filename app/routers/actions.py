@@ -11,21 +11,18 @@ router = APIRouter(prefix="/actions", tags=["actions"])
 
 class ActionRequest(BaseModel):
     profile_id: str
-    persona: str          # "parent" | "kid" | "guest"
-    action_type: str      # "weather" | "spotify_play" | "read_schedule" | "write_schedule"
+    persona: str
+    action_type: str
     params: dict = {}
 
 
 @router.post("")
-def propose_action(req: ActionRequest, session: Session = Depends(get_session)):
-    """The whole pipeline in one endpoint: model proposes, gate disposes,
-    integration executes (if allowed), every outcome is logged.
-    """
+async def propose_action(req: ActionRequest, session: Session = Depends(get_session)):
     decision = check_permission(req.persona, req.action_type, session)
 
     result = None
     if decision == "allow":
-        result = run_action(req.action_type, req.params)
+        result = await run_action(req.action_type, req.params, session)
 
     log_action(session, req.profile_id, req.action_type, req.params, decision)
 
