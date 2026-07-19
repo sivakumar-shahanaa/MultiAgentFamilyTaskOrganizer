@@ -60,8 +60,11 @@ def refresh_access_token(refresh_token: str) -> dict:
         return response.json()
 
 
-def get_valid_access_token(person_id: str, session: Session) -> str | None:
-    credential = session.get(SpotifyCredential, person_id)
+HOUSEHOLD_SPOTIFY_ACCOUNT_ID = "household"
+
+
+def get_valid_access_token(session: Session) -> str | None:
+    credential = session.get(SpotifyCredential, HOUSEHOLD_SPOTIFY_ACCOUNT_ID)
     if credential is None:
         return None
 

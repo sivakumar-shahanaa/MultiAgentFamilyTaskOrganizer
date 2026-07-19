@@ -4,9 +4,9 @@ from sqlmodel import Field, SQLModel
 
 
 class SpotifyCredential(SQLModel, table=True):
-    """Spotify OAuth tokens for an admitted Person."""
+    """Spotify OAuth tokens for the shared household Spotify account."""
 
-    person_id: str = Field(primary_key=True, foreign_key="person.id")
+    account_id: str = Field(default="household", primary_key=True)
     access_token: str
     refresh_token: str
     expires_at: datetime

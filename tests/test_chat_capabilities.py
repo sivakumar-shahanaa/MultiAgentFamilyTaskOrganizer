@@ -78,7 +78,7 @@ def test_guest_can_use_weather_and_spotify_capabilities(client) -> None:
 def test_spotify_capability_queues_track_with_connected_account(client, monkeypatch) -> None:
     person_id = _admit(client, "Spotify Parent", "Parent", "chris")
     person = _person(person_id)
-    monkeypatch.setattr(spotify_integration, "get_valid_access_token", lambda person_id, session: "access-token")
+    monkeypatch.setattr(spotify_integration, "get_valid_access_token", lambda session: "access-token")
     monkeypatch.setattr(
         spotify_integration,
         "search_track",

@@ -9,21 +9,17 @@ class SpotifyIntegration(Integration):
     """Queue a requested track on the authenticated person's Spotify account."""
 
     def execute(self, params: dict) -> dict:
-        person_id = params.get("person_id")
         query = params.get("track") or params.get("query") or ""
-        if not person_id:
-            return {"status": "error", "message": "missing person_id for Spotify playback"}
         if not query:
             return {"status": "error", "message": "missing track query"}
 
         with Session(engine) as session:
-            access_token = get_valid_access_token(person_id, session)
+            access_token = get_valid_access_token(session)
 
         if access_token is None:
             return {
                 "status": "needs_spotify_auth",
-                "message": f"Connect Spotify first: /spotify/login?person_id={person_id}",
-                "person_id": person_id,
+                "message": "Connect Spotify first: /spotify/login",
             }
 
         track = search_track(query, access_token)

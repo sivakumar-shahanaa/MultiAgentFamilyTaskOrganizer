@@ -4,27 +4,30 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlmodel import Session
 
-from app.db import Person
 from app.db.session import get_session
-from app.integrations.spotify_client import build_authorize_url, exchange_code_for_tokens
+from app.integrations.spotify_client import (
+    HOUSEHOLD_SPOTIFY_ACCOUNT_ID,
+    build_authorize_url,
+    exchange_code_for_tokens,
+)
 from app.models import SpotifyCredential
 
 router = APIRouter(prefix="/spotify", tags=["spotify-auth"])
 
 
 @router.get("/login")
-def spotify_login(person_id: str, session: Session = Depends(get_session)):
-    person = session.get(Person, person_id)
-    if person is None:
-        raise HTTPException(status_code=404, detail="Person not found")
-    return RedirectResponse(build_authorize_url(state=person_id))
+def spotify_login(person_id: str | None = None):
+    """Connect the shared household Spotify account.
+
+    person_id is accepted only for backward-compatible old links and is ignored.
+    """
+    return RedirectResponse(build_authorize_url(state=HOUSEHOLD_SPOTIFY_ACCOUNT_ID))
 
 
 @router.get("/callback")
 def spotify_callback(code: str, state: str, session: Session = Depends(get_session)):
-    person_id = state
-    if session.get(Person, person_id) is None:
-        raise HTTPException(status_code=404, detail="Person not found")
+    if state != HOUSEHOLD_SPOTIFY_ACCOUNT_ID:
+        raise HTTPException(status_code=400, detail="Invalid Spotify OAuth state")
 
     try:
         token_data = exchange_code_for_tokens(code)
@@ -34,7 +37,7 @@ def spotify_callback(code: str, state: str, session: Session = Depends(get_sessi
     expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
         seconds=token_data.get("expires_in", 3600)
     )
-    existing = session.get(SpotifyCredential, person_id)
+    existing = session.get(SpotifyCredential, HOUSEHOLD_SPOTIFY_ACCOUNT_ID)
     if existing:
         existing.access_token = token_data["access_token"]
         existing.refresh_token = token_data.get("refresh_token", existing.refresh_token)
@@ -43,11 +46,11 @@ def spotify_callback(code: str, state: str, session: Session = Depends(get_sessi
     else:
         session.add(
             SpotifyCredential(
-                person_id=person_id,
+                account_id=HOUSEHOLD_SPOTIFY_ACCOUNT_ID,
                 access_token=token_data["access_token"],
                 refresh_token=token_data["refresh_token"],
                 expires_at=expires_at,
             )
         )
     session.commit()
-    return {"status": "connected", "person_id": person_id}
+    return {"status": "connected", "account_id": HOUSEHOLD_SPOTIFY_ACCOUNT_ID}
