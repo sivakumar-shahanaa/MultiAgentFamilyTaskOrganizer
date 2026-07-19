@@ -35,6 +35,7 @@ engine = create_engine("sqlite:///family_task_organizer.db")
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     SQLModel.metadata.create_all(engine)
+    init_db()
     yield
 
 
@@ -503,11 +504,5 @@ def _to_session_response(session: ChatSession) -> SessionResponse:
     )
 
 
-# Added for integrations
-@app.on_event("startup")
-def on_startup() -> None:
-    init_db()
-
 app.include_router(household.router)
 app.include_router(actions.router)
-###

@@ -4,6 +4,7 @@
 
 # Python
 family_task_organizer.db
+household.db
 __pycache__/
 *.py[cod]
 *.egg-info/
