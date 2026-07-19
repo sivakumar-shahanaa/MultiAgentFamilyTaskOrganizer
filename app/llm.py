@@ -78,7 +78,7 @@ def _get_model(name: str) -> OpenAIModel:
 agent = Agent(
     _get_model(DEFAULT_MODEL),
     deps_type=AgentDeps,
-    model_settings={"max_tokens": 128, "extra_body": {"think": False}},
+    model_settings={"extra_body": {"think": False}},
 )
 
 

@@ -74,7 +74,6 @@ def make_agent(persona_key: str) -> Agent:
             # needs a prompt response and only consumes the final JSON action.
             model_settings={
                 "temperature": 0.3,
-                "max_tokens": 128,
                 "extra_body": {"think": False},
             },
         )
