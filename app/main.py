@@ -751,3 +751,15 @@ def _to_session_response(session: ChatSession) -> SessionResponse:
 
 app.include_router(household.router)
 app.include_router(actions.router)
+
+# JSON API for the React avatar frontend (Robyn) — additive
+from app.routers import chat_api  # noqa: E402
+app.include_router(chat_api.router)
+
+# Serve the built React avatar frontend at /app (offline, same origin).
+from pathlib import Path  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+_frontend_dist = Path(__file__).resolve().parent.parent / "frontends" / "chat" / "dist"
+if _frontend_dist.exists():
+    app.mount("/app", StaticFiles(directory=_frontend_dist, html=True), name="avatar-frontend")
