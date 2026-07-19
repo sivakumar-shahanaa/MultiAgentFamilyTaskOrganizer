@@ -3,6 +3,7 @@
 .venv/
 
 # Python
+family_task_organizer.db
 __pycache__/
 *.py[cod]
 *.egg-info/
