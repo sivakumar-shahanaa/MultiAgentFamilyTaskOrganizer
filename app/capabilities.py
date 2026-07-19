@@ -1,18 +1,14 @@
-"""Typed capabilities used by chat agents.
-
-These are deliberately normal Python functions with Pydantic-validated inputs.
-They are the execution boundary between an agent's proposed intent and Sahana's
-integrations/permission/audit system. The functions are also shaped so they can
-be registered as Pydantic AI tools without changing their internals.
-"""
+"""Typed household capabilities for Pydantic AI agents."""
 
 from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from pydantic_ai import RunContext
+from pydantic_ai.capabilities import Capability
 from sqlmodel import Session
 
 from app.db import Person, Role
@@ -25,6 +21,7 @@ class CapabilityResult(BaseModel):
     action_type: str
     decision: Literal["allow", "deny", "escalate"]
     result: dict | None = None
+    message: str
 
 
 class WeatherParams(BaseModel):
@@ -49,11 +46,63 @@ class WriteScheduleParams(BaseModel):
     visible_to: str = "household"
 
 
-def execute_capability(person: Person, action_type: str, params: dict) -> CapabilityResult:
-    """Validate, permission-check, execute, and audit one proposed action."""
-    if action_type == "none":
-        return CapabilityResult(action_type=action_type, decision="allow", result=None)
+def household_capability() -> Capability[Any]:
+    """Custom capability grouping all household action tools."""
+    return Capability(
+        id="household_capabilities",
+        description="Weather, Spotify, and calendar tools with household role permissions.",
+        instructions=(
+            "Use household capability tools whenever the user asks about weather, music, "
+            "or calendar/schedule. After a tool returns, answer from the tool result; "
+            "do not invent calendar events that are not in the returned result."
+        ),
+        tools=[get_weather, play_spotify, read_schedule, write_schedule],
+    )
 
+
+def get_weather(ctx: RunContext[Any], location: str = "home") -> dict:
+    """Get weather for a location. Everyone can use this."""
+    person = _require_person(ctx)
+    return execute_capability(person, "weather", {"location": location}).model_dump()
+
+
+def play_spotify(ctx: RunContext[Any], track: str) -> dict:
+    """Play a Spotify track. Everyone can use this."""
+    person = _require_person(ctx)
+    return execute_capability(person, "spotify_play", {"track": track}).model_dump()
+
+
+def read_schedule(ctx: RunContext[Any]) -> dict:
+    """Read calendar/schedule events. Parents and children can use this."""
+    person = _require_person(ctx)
+    return execute_capability(person, "read_schedule", {}).model_dump()
+
+
+def write_schedule(
+    ctx: RunContext[Any],
+    title: str,
+    day: str | None = None,
+    time: str | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+) -> dict:
+    """Create a calendar event. Only parents can use this."""
+    person = _require_person(ctx)
+    return execute_capability(
+        person,
+        "write_schedule",
+        {
+            "title": title,
+            "day": day,
+            "time": time,
+            "start_time": start_time,
+            "end_time": end_time,
+        },
+    ).model_dump()
+
+
+def execute_capability(person: Person, action_type: str, params: dict) -> CapabilityResult:
+    """Validate, permission-check, execute, audit, and format one capability call."""
     normalized_params = _normalize_params(person, action_type, params)
     permission_scope = _permission_scope_for_role(person.role)
 
@@ -62,7 +111,41 @@ def execute_capability(person: Person, action_type: str, params: dict) -> Capabi
         result = run_action(action_type, normalized_params) if decision == "allow" else None
         log_action(session, person.id, action_type, normalized_params, decision)
 
-    return CapabilityResult(action_type=action_type, decision=decision, result=result)
+    return CapabilityResult(
+        action_type=action_type,
+        decision=decision,
+        result=result,
+        message=_message_for_result(action_type, decision, result),
+    )
+
+
+def _message_for_result(action_type: str, decision: str, result: dict | None) -> str:
+    if decision != "allow":
+        return "I can't do that for your role."
+
+    if action_type == "read_schedule":
+        events = result.get("events", []) if isinstance(result, dict) else []
+        if not events:
+            return "You don't have anything scheduled."
+        event_titles = ", ".join(str(event.get("title", "Untitled")) for event in events)
+        return f"Your scheduled events are: {event_titles}."
+
+    if action_type == "write_schedule" and isinstance(result, dict):
+        if result.get("status") == "created":
+            return "Added that to the schedule."
+        if result.get("status") == "error":
+            return f"I couldn't add that to the schedule: {result.get('message')}."
+
+    if action_type == "weather" and isinstance(result, dict):
+        return (
+            f"It's {result.get('condition')} and {result.get('temp_f')}°F in "
+            f"{result.get('location')}. {result.get('advice')}."
+        )
+
+    if action_type == "spotify_play" and isinstance(result, dict):
+        return f"Playing {result.get('now_playing')}."
+
+    return "Done."
 
 
 def _normalize_params(person: Person, action_type: str, params: dict) -> dict:
@@ -87,6 +170,13 @@ def _normalize_params(person: Person, action_type: str, params: dict) -> dict:
             "visible_to": schedule.visible_to,
         }
     return params
+
+
+def _require_person(ctx: RunContext[Any]) -> Person:
+    person = getattr(ctx.deps, "person", None)
+    if person is None:
+        raise RuntimeError("A person identity is required to use household capabilities.")
+    return person
 
 
 def _parse_schedule_start(schedule: WriteScheduleParams) -> datetime | None:

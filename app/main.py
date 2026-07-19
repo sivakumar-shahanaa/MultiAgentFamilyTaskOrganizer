@@ -22,7 +22,6 @@ from app.db import (
     get_session as get_user_session,
     init_db as init_user_db,
 )
-from app.capabilities import execute_capability
 from app.db.seed import seed as seed_household_defaults
 from app.db.session import init_db as init_household_db
 from app.routers import actions, household
@@ -169,21 +168,13 @@ async def chat_message(request: Request):
     session = _get_or_create_person_session(person)
     user_message = ChatMessage(role="user", content=message)
     try:
-        proposed_action = await run_turn(
+        reply_text = await run_turn(
             _persona_key_for_person(person),
             message,
             [{"role": item.role, "content": item.content} for item in session.messages],
             person=person,
         )
-        assistant_message = ChatMessage(
-            role="assistant",
-            content=_final_reply_for_proposed_action(
-                person,
-                proposed_action.action,
-                proposed_action.params,
-                proposed_action.reply,
-            ),
-        )
+        assistant_message = ChatMessage(role="assistant", content=reply_text)
     except ModelAPIError:
         assistant_message = ChatMessage(
             role="assistant",
@@ -402,14 +393,19 @@ def get_session(session_id: UUID) -> ChatSession:
 @app.post("/sessions/{session_id}/messages", response_model=SendMessageResponse)
 async def send_message(session_id: UUID, request: SendMessageRequest) -> SendMessageResponse:
     session = _get_session(session_id)
-    proposed_action = await run_turn(
-        "guest",
-        request.message,
-        [{"role": item.role, "content": item.content} for item in session.messages],
-    )
+    guest = Person(name="Guest", role=Role.guest, persona=PersonaKey.guest)
+    try:
+        reply_text = await run_turn(
+            "guest",
+            request.message,
+            [{"role": item.role, "content": item.content} for item in session.messages],
+            person=guest,
+        )
+    except ModelAPIError:
+        reply_text = "I couldn't reach the local language model. Please make sure LM Studio is running and try again."
 
     user_message = ChatMessage(role="user", content=request.message)
-    assistant_message = ChatMessage(role="assistant", content=proposed_action.reply)
+    assistant_message = ChatMessage(role="assistant", content=reply_text)
 
     session.messages.extend([user_message, assistant_message])
     return SendMessageResponse(
@@ -457,47 +453,6 @@ def _chat_page(person: Person, session: ChatSession) -> str:
         <script>localStorage.setItem("person_id", "{person.id}");</script>
         """,
     )
-
-
-def _final_reply_for_proposed_action(
-    person: Person,
-    action_type: str,
-    params: dict,
-    proposed_reply: str,
-) -> str:
-    if action_type == "none":
-        return proposed_reply
-
-    capability = execute_capability(person, action_type, params)
-    result = capability.result
-
-    if capability.decision != "allow":
-        return f"I can't do that for your role.\n\nAction {capability.decision}: {action_type}"
-
-    if action_type == "read_schedule":
-        events = result.get("events", []) if isinstance(result, dict) else []
-        if not events:
-            return f"You don't have anything scheduled.\n\nAction executed: {action_type} → {result}"
-        event_titles = ", ".join(str(event.get("title", "Untitled")) for event in events)
-        return f"Your scheduled events are: {event_titles}.\n\nAction executed: {action_type} → {result}"
-
-    if action_type == "weather" and isinstance(result, dict):
-        return (
-            f"It's {result.get('condition')} and {result.get('temp_f')}°F in "
-            f"{result.get('location')}. {result.get('advice')}.\n\n"
-            f"Action executed: {action_type} → {result}"
-        )
-
-    if action_type == "spotify_play" and isinstance(result, dict):
-        return f"Playing {result.get('now_playing')}.\n\nAction executed: {action_type} → {result}"
-
-    if action_type == "write_schedule" and isinstance(result, dict):
-        if result.get("status") == "created":
-            return f"Added that to the schedule.\n\nAction executed: {action_type} → {result}"
-        if result.get("status") == "error":
-            return f"I couldn't add that to the schedule: {result.get('message')}.\n\nAction executed: {action_type} → {result}"
-
-    return f"{proposed_reply}\n\nAction executed: {action_type} → {result}"
 
 
 def _default_persona_for_role(role: Role) -> PersonaKey:
