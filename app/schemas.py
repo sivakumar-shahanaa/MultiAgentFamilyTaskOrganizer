@@ -6,32 +6,34 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.db import PersonaKey, Role
+
 
 # --- Users / personas ---------------------------------------------------------
 
 class CreateUserRequest(BaseModel):
     name: str = Field(min_length=1, description="Household member's name (unique).")
-    persona_prompt: Optional[str] = Field(
-        default=None,
-        description="Prompt that shapes this user's personal agent persona.",
-    )
+    role: Optional[Role] = Field(default=None, description="Permission scope.")
+    persona: Optional[PersonaKey] = Field(default=None, description="Agent voice/persona.")
     model: Optional[str] = Field(
         default=None, description="Optional per-user model override, e.g. llama3.2"
     )
 
 
 class UpdateUserRequest(BaseModel):
-    """All fields optional — a partial update (e.g. edit just the persona)."""
+    """All fields optional — a partial update."""
 
     name: Optional[str] = Field(default=None, min_length=1)
-    persona_prompt: Optional[str] = None
+    role: Optional[Role] = None
+    persona: Optional[PersonaKey] = None
     model: Optional[str] = None
 
 
 class UserResponse(BaseModel):
-    id: int
+    id: str
     name: str
-    persona_prompt: Optional[str]
+    role: Role
+    persona: PersonaKey
     model: Optional[str]
     created_at: datetime
 

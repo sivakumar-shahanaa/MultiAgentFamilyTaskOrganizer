@@ -1,23 +1,35 @@
 import html
-import secrets
 import socket
-import time
 from contextlib import asynccontextmanager
-from enum import Enum
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from sqlmodel import Session, SQLModel, select
 
 
 from app.auth import get_current_user
-from app.db import Conversation, User, get_session as get_user_session, init_db as init_user_db
+from app.db import (
+    AccessRequest,
+    AccessStatus,
+    Conversation,
+    Person,
+    PersonaKey,
+    Role,
+    engine,
+    get_session as get_user_session,
+    init_db as init_user_db,
+)
+from app.db.seed import seed as seed_household_defaults
+from app.db.session import engine as household_engine
 from app.db.session import init_db as init_household_db
+from app.integrations.registry import run_action
+from app.permissions.gate import check_permission, log_action
 from app.routers import actions, household
 from app.agents import run_turn
+from app.personas import PERSONAS
 from app.llm import DEFAULT_MODEL, history_to_display, run_chat
 from app.schemas import (
     ChatMessage,
@@ -37,13 +49,11 @@ from app.utils import utcnow
 
 load_dotenv()
 
-engine = create_engine("sqlite:///family_task_organizer.db")
-
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     SQLModel.metadata.create_all(engine)
     init_household_db()
+    seed_household_defaults()
     init_user_db()
     yield
 
@@ -52,30 +62,6 @@ app = FastAPI(title="MultiAgent Family Task Organizer API", lifespan=lifespan)
 
 _sessions: dict[UUID, ChatSession] = {}
 _person_sessions: dict[str, UUID] = {}
-
-
-class Role(str, Enum):
-    parent = "Parent"
-    child = "Child"
-    guest = "Guest"
-
-
-class AccessStatus(str, Enum):
-    pending = "Pending"
-    accepted = "Accepted"
-
-
-class Person(SQLModel, table=True):
-    id: str = Field(default_factory=lambda: _new_ulid(), primary_key=True)
-    name: str = Field(index=True)
-    role: Role
-
-
-class AccessRequest(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    name: str
-    status: AccessStatus = Field(default=AccessStatus.pending, index=True)
-    person_id: str | None = Field(default=None, foreign_key="person.id")
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -182,12 +168,13 @@ async def chat_message(request: Request):
 
     session = _get_or_create_person_session(person)
     proposed_action = await run_turn(
-        _persona_key_for_role(person.role),
+        _persona_key_for_person(person),
         message,
         [{"role": item.role, "content": item.content} for item in session.messages],
     )
+    action_note = _execute_proposed_action(person, proposed_action.action, proposed_action.params)
     user_message = ChatMessage(role="user", content=message)
-    assistant_message = ChatMessage(role="assistant", content=proposed_action.reply)
+    assistant_message = ChatMessage(role="assistant", content=proposed_action.reply + action_note)
     session.messages.extend([user_message, assistant_message])
     return _chat_page(person, session)
 
@@ -234,7 +221,11 @@ async def admit_person(request: Request) -> RedirectResponse:
     with Session(engine) as session:
         access_request = session.get(AccessRequest, request_id)
         if access_request is not None and access_request.status == AccessStatus.pending:
-            person = Person(name=access_request.name, role=role)
+            try:
+                persona = PersonaKey(str(form.get("persona") or _default_persona_for_role(role).value))
+            except ValueError:
+                persona = _default_persona_for_role(role)
+            person = Person(name=access_request.name, role=role, persona=persona)
             session.add(person)
             session.commit()
             session.refresh(person)
@@ -274,54 +265,56 @@ def health() -> dict[str, str]:
 
 
 @app.post("/users", response_model=UserCreatedResponse, status_code=status.HTTP_201_CREATED)
-def create_user(request: CreateUserRequest, session: Session = Depends(get_user_session)) -> User:
-    user = User(name=request.name, persona_prompt=request.persona_prompt, model=request.model)
-    session.add(user)
+def create_user(request: CreateUserRequest, session: Session = Depends(get_user_session)) -> Person:
+    role = Role(request.role) if request.role is not None else Role.guest
+    persona = request.persona or _default_persona_for_role(role)
+    person = Person(name=request.name, role=role, persona=persona, model=request.model)
+    session.add(person)
     try:
         session.commit()
     except IntegrityError:
         session.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Name already taken")
-    session.refresh(user)
-    return user
+    session.refresh(person)
+    return person
 
 
 @app.get("/users", response_model=list[UserResponse])
-def list_users(session: Session = Depends(get_user_session)) -> list[User]:
-    return list(session.exec(select(User)).all())
+def list_users(session: Session = Depends(get_user_session)) -> list[Person]:
+    return list(session.exec(select(Person)).all())
 
 
 @app.get("/users/me", response_model=UserResponse)
-def get_me(user: User = Depends(get_current_user)) -> User:
-    return user
+def get_me(person: Person = Depends(get_current_user)) -> Person:
+    return person
 
 
 @app.patch("/users/me", response_model=UserResponse)
 def update_me(
     request: UpdateUserRequest,
-    user: User = Depends(get_current_user),
+    person: Person = Depends(get_current_user),
     session: Session = Depends(get_user_session),
-) -> User:
+) -> Person:
     data = request.model_dump(exclude_unset=True)
     for key, value in data.items():
-        setattr(user, key, value)
-    session.add(user)
+        setattr(person, key, value)
+    session.add(person)
     try:
         session.commit()
     except IntegrityError:
         session.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Name already taken")
-    session.refresh(user)
-    return user
+    session.refresh(person)
+    return person
 
 
 @app.post("/conversations", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
 def create_conversation(
     request: CreateConversationRequest,
-    user: User = Depends(get_current_user),
+    person: Person = Depends(get_current_user),
     session: Session = Depends(get_user_session),
 ) -> ConversationResponse:
-    conversation = Conversation(user_id=user.id, title=request.title)
+    conversation = Conversation(person_id=person.id, title=request.title)
     session.add(conversation)
     session.commit()
     session.refresh(conversation)
@@ -330,20 +323,20 @@ def create_conversation(
 
 @app.get("/conversations", response_model=list[ConversationResponse])
 def list_conversations(
-    user: User = Depends(get_current_user),
+    person: Person = Depends(get_current_user),
     session: Session = Depends(get_user_session),
 ) -> list[ConversationResponse]:
-    rows = session.exec(select(Conversation).where(Conversation.user_id == user.id)).all()
+    rows = session.exec(select(Conversation).where(Conversation.person_id == person.id)).all()
     return [_to_conversation_response(conversation) for conversation in rows]
 
 
 @app.get("/conversations/{conversation_id}/messages", response_model=list[ChatMessage])
 def get_messages(
     conversation_id: int,
-    user: User = Depends(get_current_user),
+    person: Person = Depends(get_current_user),
     session: Session = Depends(get_user_session),
 ) -> list[ChatMessage]:
-    conversation = _get_owned_conversation(conversation_id, user, session)
+    conversation = _get_owned_conversation(conversation_id, person, session)
     return history_to_display(conversation.history_json)
 
 
@@ -351,15 +344,15 @@ def get_messages(
 async def send_conversation_message(
     conversation_id: int,
     request: SendMessageRequest,
-    user: User = Depends(get_current_user),
+    person: Person = Depends(get_current_user),
     session: Session = Depends(get_user_session),
 ) -> SendMessageResponse:
-    conversation = _get_owned_conversation(conversation_id, user, session)
+    conversation = _get_owned_conversation(conversation_id, person, session)
     reply_text, updated_history = await run_chat(
-        user_id=user.id,
-        user_name=user.name,
-        persona_prompt=user.persona_prompt,
-        model_name=user.model,
+        user_id=0,
+        user_name=person.name,
+        persona_prompt=PERSONAS[person.persona.value].system_prompt,
+        model_name=person.model,
         message=request.message,
         history_json=conversation.history_json,
     )
@@ -412,9 +405,9 @@ async def send_message(session_id: UUID, request: SendMessageRequest) -> SendMes
     )
 
 
-def _get_owned_conversation(conversation_id: int, user: User, session: Session) -> Conversation:
+def _get_owned_conversation(conversation_id: int, person: Person, session: Session) -> Conversation:
     conversation = session.get(Conversation, conversation_id)
-    if conversation is None or conversation.user_id != user.id:
+    if conversation is None or conversation.person_id != person.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return conversation
 
@@ -439,7 +432,7 @@ def _chat_page(person: Person, session: ChatSession) -> str:
         f"""
         <section class="card chat">
           <h1>Hi, {_escape(person.name)}</h1>
-          <p>Role: {_escape(person.role.value)}</p>
+          <p>Role: {_escape(person.role.value)} · Persona: {_escape(person.persona.value)}</p>
           <div class="messages">{messages}</div>
           <form method="post" action="/chat/message" class="stack">
             <input type="hidden" name="person_id" value="{person.id}" />
@@ -452,12 +445,39 @@ def _chat_page(person: Person, session: ChatSession) -> str:
     )
 
 
-def _persona_key_for_role(role: Role) -> str:
+def _execute_proposed_action(person: Person, action_type: str, params: dict) -> str:
+    if action_type == "none":
+        return ""
+
+    permission_scope = _permission_scope_for_role(person.role)
+    with Session(household_engine) as session:
+        decision = check_permission(permission_scope, action_type, session)
+        result = run_action(action_type, params) if decision == "allow" else None
+        log_action(session, person.id, action_type, params, decision)
+
+    if decision == "allow":
+        return f"\n\nAction executed: {action_type} → {result}"
+    return f"\n\nAction {decision}: {action_type}"
+
+
+def _permission_scope_for_role(role: Role) -> str:
     if role == Role.parent:
-        return "julie"
+        return "parent"
     if role == Role.child:
-        return "spencer"
+        return "kid"
     return "guest"
+
+
+def _default_persona_for_role(role: Role) -> PersonaKey:
+    if role == Role.parent:
+        return PersonaKey.julie
+    if role == Role.child:
+        return PersonaKey.spencer
+    return PersonaKey.guest
+
+
+def _persona_key_for_person(person: Person) -> str:
+    return person.persona.value
 
 
 def _get_or_create_person_session(person: Person) -> ChatSession:
@@ -480,7 +500,7 @@ def _person_row(person: Person) -> str:
     <form method="post" action="/admin/people/delete" class="person-row">
       <input type="hidden" name="person_id" value="{person.id}" />
       <span><strong>{_escape(person.name)}</strong><br /><small>{_escape(person.id)}</small></span>
-      <span>{_escape(person.role.value)}</span>
+      <span>{_escape(person.role.value)} · {_escape(person.persona.value)}</span>
       <button type="submit" class="danger">Delete</button>
     </form>
     """
@@ -488,11 +508,13 @@ def _person_row(person: Person) -> str:
 
 def _pending_request_row(access_request: AccessRequest) -> str:
     role_options = "".join(f'<option value="{role.value}">{role.value}</option>' for role in Role)
+    persona_options = "".join(f'<option value="{persona.value}">{persona.value}</option>' for persona in PersonaKey)
     return f"""
     <form method="post" action="/admin/admit" class="person-row">
       <input type="hidden" name="request_id" value="{access_request.id}" />
       <strong>{_escape(access_request.name)}</strong>
       <select name="role">{role_options}</select>
+      <select name="persona">{persona_options}</select>
       <button type="submit">Admit</button>
     </form>
     """
@@ -523,16 +545,6 @@ def _reset_chat_page() -> str:
         <script>localStorage.removeItem("person_id");</script>
         """,
     )
-
-
-def _new_ulid() -> str:
-    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-    value = (int(time.time() * 1000) << 80) | secrets.randbits(80)
-    chars = []
-    for _ in range(26):
-        chars.append(alphabet[value & 31])
-        value >>= 5
-    return "".join(reversed(chars))
 
 
 
@@ -605,7 +617,7 @@ def _page(title: str, body: str) -> str:
           }}
           .dot {{ width: 0.6rem; height: 0.6rem; border-radius: 50%; background: currentColor; }}
           .links {{ margin-top: 1.5rem; }}
-          .person-row {{ display: grid; grid-template-columns: 1fr 1fr auto; gap: 0.5rem; align-items: center; }}
+          .person-row {{ display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 0.5rem; align-items: center; }}
           .messages {{ display: grid; gap: 0.5rem; margin: 1rem 0; }}
           .message {{ border-radius: 0.75rem; padding: 0.75rem; background: #f1f5f9; }}
           .message.assistant {{ background: #e0f2fe; }}

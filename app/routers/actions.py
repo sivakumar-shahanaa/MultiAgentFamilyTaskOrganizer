@@ -12,7 +12,7 @@ router = APIRouter(prefix="/actions", tags=["actions"])
 class ActionRequest(BaseModel):
     profile_id: str
     persona: str          # "parent" | "kid" | "guest"
-    action_type: str      # "weather" | "reschedule_calendar" | "spotify_play" | ...
+    action_type: str      # "weather" | "spotify_play" | "read_schedule" | "write_schedule"
     params: dict = {}
 
 

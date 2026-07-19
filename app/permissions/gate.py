@@ -1,10 +1,10 @@
 import json
-from datetime import datetime
 from pathlib import Path
 
 from sqlmodel import Session, select
 
 from app.models import PermissionRule, AuditLog
+from app.utils import utcnow
 
 # Fail-safe default: if no rule matches, never silently allow.
 DEFAULT_DECISION = "escalate"
@@ -40,7 +40,7 @@ def log_action(
         action_type=action_type,
         params=json.dumps(params),
         decision=decision,
-        timestamp=datetime.utcnow(),
+        timestamp=utcnow(),
     )
     session.add(entry)
     session.commit()

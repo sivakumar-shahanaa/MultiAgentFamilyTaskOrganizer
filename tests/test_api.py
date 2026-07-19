@@ -12,10 +12,11 @@ def test_health(client):
 # --- Users / personas ---------------------------------------------------------
 
 def test_create_user_returns_token(make_user):
-    _, _, body = make_user("Alex", persona_prompt="Be terse.")
+    _, _, body = make_user("Alex", role="Child", persona="spencer")
     assert body["token"]
     assert body["name"] == "Alex"
-    assert body["persona_prompt"] == "Be terse."
+    assert body["role"] == "Child"
+    assert body["persona"] == "spencer"
 
 
 def test_tokens_are_distinct(make_user):
@@ -44,10 +45,11 @@ def test_me_hides_token(client, make_user):
 
 
 def test_update_persona(client, make_user):
-    _, headers, _ = make_user("Alex", persona_prompt="Be terse.")
+    _, headers, _ = make_user("Alex", role="Guest", persona="guest")
     updated = client.patch("/users/me", headers=headers,
-                           json={"persona_prompt": "Be a coach."}).json()
-    assert updated["persona_prompt"] == "Be a coach."
+                           json={"role": "Parent", "persona": "chris"}).json()
+    assert updated["role"] == "Parent"
+    assert updated["persona"] == "chris"
 
 
 def test_roster_lists_users_without_tokens(client, make_user):

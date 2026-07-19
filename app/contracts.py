@@ -34,8 +34,7 @@ class ProposedAction(BaseModel):
     """What the LLM returns. It never acts — it proposes."""
 
     action: Literal[
-        "play_music", "add_event", "get_weather",
-        "send_message", "save_note", "none",
+        "weather", "spotify_play", "read_schedule", "write_schedule", "none",
     ]
     params: dict = Field(default_factory=dict)
     reply: str = Field(description="What to say to the user, in persona voice")

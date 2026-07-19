@@ -13,7 +13,7 @@ class PermissionRule(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     persona: str            # "kid" | "parent" | "guest"
-    action_type: str        # "send_email" | "reschedule_calendar" | "spotify_play" | ...
+    action_type: str        # "weather" | "spotify_play" | "read_schedule" | "write_schedule"
     decision: str            # "allow" | "deny" | "escalate"
 
 

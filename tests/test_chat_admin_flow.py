@@ -44,7 +44,7 @@ def test_admin_admit_creates_ulid_person_with_role(client: TestClient) -> None:
 
     admit_response = client.post(
         "/admin/admit",
-        data={"request_id": request_id, "role": "Guest"},
+        data={"request_id": request_id, "role": "Guest", "persona": "guest"},
         follow_redirects=False,
     )
 
@@ -62,6 +62,7 @@ def test_admin_admit_creates_ulid_person_with_role(client: TestClient) -> None:
         assert person is not None
         assert person.name == "Alice"
         assert person.role == main.Role.guest
+        assert person.persona == main.PersonaKey.guest
 
 
 def test_deleted_person_resets_chat(client: TestClient) -> None:

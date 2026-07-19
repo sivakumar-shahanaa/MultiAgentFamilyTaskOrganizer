@@ -12,20 +12,20 @@ DEFAULT_PROFILES = [
 
 DEFAULT_RULES = [
     # persona, action_type, decision
-    ("parent", "send_email", "allow"),
-    ("parent", "reschedule_calendar", "allow"),
-    ("parent", "spotify_play", "allow"),
     ("parent", "weather", "allow"),
+    ("parent", "spotify_play", "allow"),
+    ("parent", "read_schedule", "allow"),
+    ("parent", "write_schedule", "allow"),
 
-    ("kid", "send_email", "escalate"),
-    ("kid", "reschedule_calendar", "escalate"),
-    ("kid", "spotify_play", "allow"),
     ("kid", "weather", "allow"),
+    ("kid", "spotify_play", "allow"),
+    ("kid", "read_schedule", "allow"),
+    ("kid", "write_schedule", "deny"),
 
-    ("guest", "send_email", "deny"),
-    ("guest", "reschedule_calendar", "deny"),
-    ("guest", "spotify_play", "allow"),
     ("guest", "weather", "allow"),
+    ("guest", "spotify_play", "allow"),
+    ("guest", "read_schedule", "deny"),
+    ("guest", "write_schedule", "deny"),
 ]
 
 
@@ -43,7 +43,10 @@ def seed() -> None:
                 PermissionRule.action_type == action_type,
             )
             existing = session.exec(stmt).first()
-            if not existing:
+            if existing:
+                existing.decision = decision
+                session.add(existing)
+            else:
                 session.add(
                     PermissionRule(
                         persona=persona,

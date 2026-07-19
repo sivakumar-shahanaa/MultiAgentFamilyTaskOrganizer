@@ -4,6 +4,7 @@
 
 # Local database
 *.db
+household_audit.jsonl
 
 # Python
 family_task_organizer.db
