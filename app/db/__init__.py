@@ -139,6 +139,37 @@ def _ensure_identity_schema() -> None:
                 connection.exec_driver_sql("ALTER TABLE conversation ADD COLUMN person_id VARCHAR")
                 connection.exec_driver_sql("UPDATE conversation SET person_id = CAST(user_id AS TEXT)")
 
+        if "spotifycredential" in tables:
+            columns = {
+                row[1]
+                for row in connection.exec_driver_sql("PRAGMA table_info(spotifycredential)").fetchall()
+            }
+            if "account_id" not in columns and "person_id" in columns:
+                connection.exec_driver_sql(
+                    """
+                    CREATE TABLE spotifycredential_new (
+                        account_id VARCHAR NOT NULL PRIMARY KEY,
+                        access_token VARCHAR NOT NULL,
+                        refresh_token VARCHAR NOT NULL,
+                        expires_at DATETIME NOT NULL
+                    )
+                    """
+                )
+                existing = connection.exec_driver_sql(
+                    "SELECT access_token, refresh_token, expires_at FROM spotifycredential LIMIT 1"
+                ).fetchone()
+                if existing is not None:
+                    connection.exec_driver_sql(
+                        """
+                        INSERT INTO spotifycredential_new
+                            (account_id, access_token, refresh_token, expires_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        ("household", existing[0], existing[1], existing[2]),
+                    )
+                connection.exec_driver_sql("DROP TABLE spotifycredential")
+                connection.exec_driver_sql("ALTER TABLE spotifycredential_new RENAME TO spotifycredential")
+
 
 def get_session() -> Iterator[Session]:
     with Session(engine) as session:

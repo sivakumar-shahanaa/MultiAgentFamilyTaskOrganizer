@@ -23,11 +23,8 @@ from app.db import (
     init_db as init_user_db,
 )
 from app.db.seed import seed as seed_household_defaults
-from app.db.session import engine as household_engine
 from app.db.session import init_db as init_household_db
-from app.integrations.registry import run_action
-from app.permissions.gate import check_permission, log_action
-from app.routers import actions, household
+from app.routers import actions, household, spotify_auth
 from pydantic_ai.exceptions import ModelAPIError
 
 from app.agents import run_turn
@@ -171,20 +168,13 @@ async def chat_message(request: Request):
     session = _get_or_create_person_session(person)
     user_message = ChatMessage(role="user", content=message)
     try:
-        proposed_action = await run_turn(
+        reply_text = await run_turn(
             _persona_key_for_person(person),
             message,
             [{"role": item.role, "content": item.content} for item in session.messages],
+            person=person,
         )
-        assistant_message = ChatMessage(
-            role="assistant",
-            content=_final_reply_for_proposed_action(
-                person,
-                proposed_action.action,
-                proposed_action.params,
-                proposed_action.reply,
-            ),
-        )
+        assistant_message = ChatMessage(role="assistant", content=reply_text)
     except ModelAPIError:
         assistant_message = ChatMessage(
             role="assistant",
@@ -431,14 +421,19 @@ def get_session(session_id: UUID) -> ChatSession:
 @app.post("/sessions/{session_id}/messages", response_model=SendMessageResponse)
 async def send_message(session_id: UUID, request: SendMessageRequest) -> SendMessageResponse:
     session = _get_session(session_id)
-    proposed_action = await run_turn(
-        "guest",
-        request.message,
-        [{"role": item.role, "content": item.content} for item in session.messages],
-    )
+    guest = Person(name="Guest", role=Role.guest, persona=PersonaKey.guest)
+    try:
+        reply_text = await run_turn(
+            "guest",
+            request.message,
+            [{"role": item.role, "content": item.content} for item in session.messages],
+            person=guest,
+        )
+    except ModelAPIError:
+        reply_text = "I couldn't reach the local language model. Please make sure LM Studio is running and try again."
 
     user_message = ChatMessage(role="user", content=request.message)
-    assistant_message = ChatMessage(role="assistant", content=proposed_action.reply)
+    assistant_message = ChatMessage(role="assistant", content=reply_text)
 
     session.messages.extend([user_message, assistant_message])
     return SendMessageResponse(
@@ -486,52 +481,6 @@ def _chat_page(person: Person, session: ChatSession) -> str:
         <script>localStorage.setItem("person_id", "{person.id}");</script>
         """,
     )
-
-
-def _final_reply_for_proposed_action(
-    person: Person,
-    action_type: str,
-    params: dict,
-    proposed_reply: str,
-) -> str:
-    if action_type == "none":
-        return proposed_reply
-
-    permission_scope = _permission_scope_for_role(person.role)
-    with Session(household_engine) as session:
-        decision = check_permission(permission_scope, action_type, session)
-        result = run_action(action_type, params) if decision == "allow" else None
-        log_action(session, person.id, action_type, params, decision)
-
-    if decision != "allow":
-        return f"I can't do that for your role.\n\nAction {decision}: {action_type}"
-
-    if action_type == "read_schedule":
-        events = result.get("events", []) if isinstance(result, dict) else []
-        if not events:
-            return f"You don't have anything scheduled.\n\nAction executed: {action_type} → {result}"
-        event_titles = ", ".join(str(event.get("title", "Untitled")) for event in events)
-        return f"Your scheduled events are: {event_titles}.\n\nAction executed: {action_type} → {result}"
-
-    if action_type == "weather" and isinstance(result, dict):
-        return (
-            f"It's {result.get('condition')} and {result.get('temp_f')}°F in "
-            f"{result.get('location')}. {result.get('advice')}.\n\n"
-            f"Action executed: {action_type} → {result}"
-        )
-
-    if action_type == "spotify_play" and isinstance(result, dict):
-        return f"Playing {result.get('now_playing')}.\n\nAction executed: {action_type} → {result}"
-
-    return f"{proposed_reply}\n\nAction executed: {action_type} → {result}"
-
-
-def _permission_scope_for_role(role: Role) -> str:
-    if role == Role.parent:
-        return "parent"
-    if role == Role.child:
-        return "kid"
-    return "guest"
 
 
 def _default_persona_for_role(role: Role) -> PersonaKey:
@@ -751,6 +700,7 @@ def _to_session_response(session: ChatSession) -> SessionResponse:
 
 app.include_router(household.router)
 app.include_router(actions.router)
+app.include_router(spotify_auth.router)
 
 # JSON API for the React avatar frontend (Robyn) — additive
 from app.routers import chat_api  # noqa: E402

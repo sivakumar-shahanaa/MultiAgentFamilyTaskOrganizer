@@ -17,5 +17,7 @@ def run_action(action_type: str, params: dict) -> dict:
 
     if action_type == "read_schedule":
         params = {**params, "action": "list"}
+    if params.get("action") == "error":
+        return {"status": "error", "message": params.get("message", "invalid action params")}
 
     return integration.execute(params)

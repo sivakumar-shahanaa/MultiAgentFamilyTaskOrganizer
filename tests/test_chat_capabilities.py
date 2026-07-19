@@ -1,9 +1,9 @@
-from app.contracts import ProposedAction
+from sqlmodel import Session, select
+
+from app.capabilities import execute_capability
+from app.models import CalendarEvent
+import app.integrations.spotify as spotify_integration
 import app.main as main
-
-
-async def _propose(action: str, params: dict | None = None) -> ProposedAction:
-    return ProposedAction(action=action, params=params or {}, reply="Proposed.")
 
 
 def _admit(client, name: str, role: str, persona: str) -> str:
@@ -13,58 +13,121 @@ def _admit(client, name: str, role: str, persona: str) -> str:
     return client.get(f"/access-requests/{request_id}").json()["person_id"]
 
 
-def test_parent_can_write_schedule_from_chat(client, monkeypatch) -> None:
+def _person(person_id: str):
+    with Session(main.engine) as session:
+        return session.get(main.Person, person_id)
+
+
+def test_parent_write_schedule_capability_creates_calendar_event(client) -> None:
     person_id = _admit(client, "Parent One", "Parent", "julie")
+    result = execute_capability(
+        _person(person_id),
+        "write_schedule",
+        {"day": "Monday", "time": "6pm", "title": "Soccer Practice"},
+    )
 
-    async def fake_run_turn(*args, **kwargs):
-        return await _propose("write_schedule", {"action": "list"})
+    assert result.decision == "allow"
+    assert result.result["status"] == "created"
+    assert result.message == "Added that to the schedule."
+    with Session(main.engine) as session:
+        events = session.exec(select(CalendarEvent)).all()
+    assert len(events) == 1
+    assert events[0].title == "Soccer Practice"
+    assert events[0].owner_id == person_id
 
-    monkeypatch.setattr(main, "run_turn", fake_run_turn)
-    response = client.post("/chat/message", data={"person_id": person_id, "message": "Update the schedule"})
 
-    assert "Action executed: write_schedule" in response.text
-
-
-def test_child_cannot_write_schedule_from_chat(client, monkeypatch) -> None:
+def test_child_cannot_write_schedule_capability(client) -> None:
     person_id = _admit(client, "Child One", "Child", "spencer")
+    result = execute_capability(
+        _person(person_id),
+        "write_schedule",
+        {"day": "Monday", "time": "6pm", "title": "Soccer Practice"},
+    )
 
-    async def fake_run_turn(*args, **kwargs):
-        return await _propose("write_schedule", {"action": "list"})
+    assert result.decision == "deny"
+    assert result.result is None
+    assert result.message == "I can't do that for your role."
+    with Session(main.engine) as session:
+        events = session.exec(select(CalendarEvent)).all()
+    assert events == []
 
-    monkeypatch.setattr(main, "run_turn", fake_run_turn)
-    response = client.post("/chat/message", data={"person_id": person_id, "message": "Update the schedule"})
 
-    assert "Action deny: write_schedule" in response.text
-
-
-def test_child_can_read_schedule_from_chat(client, monkeypatch) -> None:
+def test_child_can_read_schedule_capability_without_hallucinated_events(client) -> None:
     person_id = _admit(client, "Child Two", "Child", "spencer")
+    result = execute_capability(_person(person_id), "read_schedule", {})
 
-    async def fake_run_turn(*args, **kwargs):
-        return ProposedAction(action="read_schedule", params={}, reply="You have meetings all day today.")
-
-    monkeypatch.setattr(main, "run_turn", fake_run_turn)
-    response = client.post("/chat/message", data={"person_id": person_id, "message": "What's on the schedule?"})
-
-    assert "You don&#x27;t have anything scheduled." in response.text
-    assert "meetings all day" not in response.text
-    assert "Action executed: read_schedule" in response.text
+    assert result.decision == "allow"
+    assert result.result == {"status": "ok", "events": []}
+    assert result.message == "You don't have anything scheduled."
 
 
-def test_guest_can_use_weather_and_spotify_from_chat(client, monkeypatch) -> None:
+def test_read_schedule_capability_includes_day_and_time(client) -> None:
+    parent_id = _admit(client, "Schedule Parent", "Parent", "chris")
+    child_id = _admit(client, "Schedule Child", "Child", "spencer")
+    execute_capability(
+        _person(parent_id),
+        "write_schedule",
+        {"date": "2026-07-20", "time": "6pm", "title": "Soccer Practice"},
+    )
+
+    result = execute_capability(_person(child_id), "read_schedule", {})
+
+    assert result.decision == "allow"
+    assert "Soccer Practice" in result.message
+    assert "Monday" in result.message
+    assert "6:00 pm" in result.message
+
+
+def test_guest_can_use_weather_and_spotify_capabilities(client) -> None:
     person_id = _admit(client, "Guest One", "Guest", "guest")
-    proposed_actions = iter([
-        ProposedAction(action="weather", params={"location": "home"}, reply="Weather."),
-        ProposedAction(action="spotify_play", params={"track": "Espresso"}, reply="Music."),
-    ])
+    person = _person(person_id)
+
+    weather = execute_capability(person, "weather", {"location": "home"})
+    spotify = execute_capability(person, "spotify_play", {"track": "Espresso"})
+
+    assert weather.decision == "allow"
+    assert weather.result["location"] == "home"
+    assert spotify.decision == "allow"
+    assert spotify.result["status"] == "needs_spotify_auth"
+    assert spotify.message.startswith("Connect Spotify first")
+
+
+def test_spotify_capability_queues_track_with_connected_account(client, monkeypatch) -> None:
+    person_id = _admit(client, "Spotify Parent", "Parent", "chris")
+    person = _person(person_id)
+    monkeypatch.setattr(spotify_integration, "get_valid_access_token", lambda session: "access-token")
+    monkeypatch.setattr(
+        spotify_integration,
+        "search_track",
+        lambda query, token: {"uri": "spotify:track:1", "name": "Espresso", "artist": "Sabrina Carpenter"},
+    )
+    monkeypatch.setattr(
+        spotify_integration,
+        "get_available_devices",
+        lambda token: [{"id": "device-1", "name": "Kitchen Speaker", "is_active": False}],
+    )
+    monkeypatch.setattr(spotify_integration, "transfer_playback", lambda device_id, token: True)
+    monkeypatch.setattr(spotify_integration, "add_to_queue", lambda uri, token, device_id=None: True)
+
+    spotify = execute_capability(person, "spotify_play", {"track": "Espresso"})
+
+    assert spotify.decision == "allow"
+    assert spotify.result == {
+        "status": "queued",
+        "track": {"uri": "spotify:track:1", "name": "Espresso", "artist": "Sabrina Carpenter"},
+        "device": "Kitchen Speaker",
+        "activated_device": True,
+    }
+    assert spotify.message == "Queued Espresso by Sabrina Carpenter on Kitchen Speaker."
+
+
+def test_chat_uses_plain_text_agent_reply(client, monkeypatch) -> None:
+    person_id = _admit(client, "Chat User", "Guest", "guest")
 
     async def fake_run_turn(*args, **kwargs):
-        return next(proposed_actions)
+        return "Plain text reply from the Pydantic AI agent."
 
     monkeypatch.setattr(main, "run_turn", fake_run_turn)
+    response = client.post("/chat/message", data={"person_id": person_id, "message": "hello"})
 
-    weather = client.post("/chat/message", data={"person_id": person_id, "message": "weather"})
-    spotify = client.post("/chat/message", data={"person_id": person_id, "message": "music"})
-
-    assert "Action executed: weather" in weather.text
-    assert "Action executed: spotify_play" in spotify.text
+    assert "Plain text reply from the Pydantic AI agent." in response.text

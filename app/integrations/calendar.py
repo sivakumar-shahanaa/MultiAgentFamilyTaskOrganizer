@@ -41,4 +41,4 @@ class CalendarIntegration(Integration):
 
             # default: list
             events = session.exec(select(CalendarEvent)).all()
-            return {"status": "ok", "events": [e.dict() for e in events]}
+            return {"status": "ok", "events": [e.model_dump() for e in events]}

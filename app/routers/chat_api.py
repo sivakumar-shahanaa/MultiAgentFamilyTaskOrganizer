@@ -2,10 +2,12 @@
 
 The HTML chat route returns rendered pages; the avatar frontend needs the
 STRUCTURED verdict so the blob can emote (allow bounce / deny shake /
-escalate tilt) and render decision chips. Mirrors main.py's chat semantics:
-model proposes -> gate decides -> integration runs if allowed -> everything
-logged. Grounded reply text matches _final_reply_for_proposed_action, minus
-the "Action ..." suffix (chips carry that in this UI).
+escalate tilt) and render decision chips.
+
+Adapted to the capabilities architecture: the agent calls household tools
+itself (permission check + execution + audit happen inside the tools, see
+app/capabilities.py). We run the agent with our own AgentDeps and read the
+recorded CapabilityResult to surface {action, decision, executed} to the UI.
 """
 import os
 import shutil
@@ -16,16 +18,14 @@ from pydantic import BaseModel, Field
 from pydantic_ai.exceptions import ModelAPIError
 from sqlmodel import Session, select
 
-from app.agents import run_turn
+from app.agents import AgentDeps, make_agent
 from app.db import Person, Role, engine
-from app.integrations.registry import run_action
-from app.permissions.gate import check_permission, log_action
 from app.personas import PERSONAS
 
 router = APIRouter(prefix="/api", tags=["chat-api"])
 
 # Conversation history for API clients, keyed by person id. In-memory, same
-# shape run_turn expects. Separate from the HTML chat's session store.
+# [{role, content}] shape the agents expect. Separate from the HTML chat.
 _history: dict[str, list[dict]] = {}
 _HISTORY_MAX = 12
 
@@ -41,25 +41,6 @@ def _scope_for_role(role: Role) -> str:
     if role == Role.child:
         return "kid"
     return "guest"
-
-
-def _grounded_reply(action_type: str, result, proposed_reply: str, decision: str) -> str:
-    if action_type == "none":
-        return proposed_reply
-    if decision != "allow":
-        return "I can't do that for your role."
-    if action_type == "read_schedule" and isinstance(result, dict):
-        events = result.get("events", [])
-        if not events:
-            return "You don't have anything scheduled."
-        titles = ", ".join(str(e.get("title", "Untitled")) for e in events)
-        return f"Your scheduled events are: {titles}."
-    if action_type == "weather" and isinstance(result, dict):
-        return (f"It's {result.get('condition')} and {result.get('temp_f')}°F in "
-                f"{result.get('location')}. {result.get('advice')}.")
-    if action_type == "spotify_play" and isinstance(result, dict):
-        return f"Playing {result.get('now_playing')}."
-    return proposed_reply
 
 
 @router.get("/people")
@@ -83,7 +64,7 @@ def list_people() -> list[dict]:
 
 
 # Lazy-loaded local Whisper (tiny, int8) — first call downloads ~75MB once at
-# build time; transcription itself is fully local, zero egress at runtime.
+# build time; transcription itself is fully local.
 _whisper = None
 
 
@@ -118,24 +99,28 @@ async def chat(req: ChatRequest) -> dict:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
 
     history = _history.setdefault(person.id, [])
+    prompt = req.message
+    if history:
+        transcript = "\n".join(f"{m['role']}: {m['content']}" for m in history)
+        prompt = f"Conversation so far:\n{transcript}\n\nuser: {req.message}"
+
+    agent = make_agent(person.persona.value)
+    deps = AgentDeps(person=person)
     try:
-        proposed = await run_turn(person.persona.value, req.message, history)
+        result = await agent.run(prompt, deps=deps)
     except ModelAPIError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Local model unreachable — is ollama running?",
         )
 
-    decision = "allow"
-    result = None
-    if proposed.action != "none":
-        scope = _scope_for_role(person.role)
-        with Session(engine) as session:
-            decision = check_permission(scope, proposed.action, session)
-            result = run_action(proposed.action, proposed.params) if decision == "allow" else None
-            log_action(session, person.id, proposed.action, proposed.params, decision)
+    # Prefer the capability's grounded message (same behavior as run_turn).
+    cap = deps.last_capability_result
+    if deps.last_capability_message is not None:
+        reply = deps.last_capability_message
+    else:
+        reply = str(result.output if hasattr(result, "output") else result.data)
 
-    reply = _grounded_reply(proposed.action, result, proposed.reply, decision)
     history.extend([{"role": "user", "content": req.message},
                     {"role": "assistant", "content": reply}])
     del history[:-_HISTORY_MAX]
@@ -146,9 +131,9 @@ async def chat(req: ChatRequest) -> dict:
         "persona": person.persona.value,
         "accent": persona.accent if persona else "#64748b",
         "reply": reply,
-        "action": proposed.action,
-        "params": proposed.params,
-        "decision": decision,          # "allow" | "deny" | "escalate" ("allow" for none)
-        "executed": decision == "allow" and proposed.action != "none",
-        "result": result,
+        "action": cap.action_type if cap else "none",
+        "params": {},
+        "decision": cap.decision if cap else "allow",   # "allow" for pure chat
+        "executed": bool(cap and cap.decision == "allow"),
+        "result": cap.result if cap else None,
     }
