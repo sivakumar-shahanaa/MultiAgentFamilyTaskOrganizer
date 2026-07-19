@@ -2,6 +2,7 @@ from sqlmodel import Session, select
 
 from app.capabilities import execute_capability
 from app.models import CalendarEvent
+import app.integrations.spotify as spotify_integration
 import app.main as main
 
 
@@ -70,7 +71,29 @@ def test_guest_can_use_weather_and_spotify_capabilities(client) -> None:
     assert weather.decision == "allow"
     assert weather.result["location"] == "home"
     assert spotify.decision == "allow"
-    assert spotify.result == {"now_playing": "Espresso", "status": "playing"}
+    assert spotify.result["status"] == "needs_spotify_auth"
+    assert spotify.message.startswith("Connect Spotify first")
+
+
+def test_spotify_capability_queues_track_with_connected_account(client, monkeypatch) -> None:
+    person_id = _admit(client, "Spotify Parent", "Parent", "chris")
+    person = _person(person_id)
+    monkeypatch.setattr(spotify_integration, "get_valid_access_token", lambda person_id, session: "access-token")
+    monkeypatch.setattr(
+        spotify_integration,
+        "search_track",
+        lambda query, token: {"uri": "spotify:track:1", "name": "Espresso", "artist": "Sabrina Carpenter"},
+    )
+    monkeypatch.setattr(spotify_integration, "add_to_queue", lambda uri, token: True)
+
+    spotify = execute_capability(person, "spotify_play", {"track": "Espresso"})
+
+    assert spotify.decision == "allow"
+    assert spotify.result == {
+        "status": "queued",
+        "track": {"uri": "spotify:track:1", "name": "Espresso", "artist": "Sabrina Carpenter"},
+    }
+    assert spotify.message == "Queued Espresso by Sabrina Carpenter."
 
 
 def test_chat_uses_plain_text_agent_reply(client, monkeypatch) -> None:

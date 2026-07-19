@@ -24,7 +24,7 @@ from app.db import (
 )
 from app.db.seed import seed as seed_household_defaults
 from app.db.session import init_db as init_household_db
-from app.routers import actions, household
+from app.routers import actions, household, spotify_auth
 from pydantic_ai.exceptions import ModelAPIError
 
 from app.agents import run_turn
@@ -648,3 +648,4 @@ def _to_session_response(session: ChatSession) -> SessionResponse:
 
 app.include_router(household.router)
 app.include_router(actions.router)
+app.include_router(spotify_auth.router)

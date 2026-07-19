@@ -143,7 +143,15 @@ def _message_for_result(action_type: str, decision: str, result: dict | None) ->
         )
 
     if action_type == "spotify_play" and isinstance(result, dict):
-        return f"Playing {result.get('now_playing')}."
+        if result.get("status") == "queued":
+            track = result.get("track", {})
+            return f"Queued {track.get('name')} by {track.get('artist')}."
+        if result.get("status") == "needs_spotify_auth":
+            return result.get("message", "Connect Spotify first.")
+        if result.get("status") == "queue_failed":
+            return result.get("message", "No active Spotify device found.")
+        if result.get("status") == "no_match":
+            return "I couldn't find that track on Spotify."
 
     return "Done."
 
@@ -152,7 +160,9 @@ def _normalize_params(person: Person, action_type: str, params: dict) -> dict:
     if action_type == "weather":
         return WeatherParams.model_validate(params).model_dump()
     if action_type == "spotify_play":
-        return SpotifyParams.model_validate(params).model_dump()
+        spotify = SpotifyParams.model_validate(params).model_dump()
+        spotify["person_id"] = person.id
+        return spotify
     if action_type == "read_schedule":
         return ReadScheduleParams.model_validate(params).model_dump()
     if action_type == "write_schedule":

@@ -1,11 +1,41 @@
+from sqlmodel import Session
+
+from app.db.session import engine
 from app.integrations.base import Integration
+from app.integrations.spotify_client import add_to_queue, get_valid_access_token, search_track
 
 
 class SpotifyIntegration(Integration):
-    """Stub for Spotify playback control. Replace `execute` with real
-    Spotify Web API calls later -- keep the return shape.
-    """
+    """Queue a requested track on the authenticated person's Spotify account."""
 
     def execute(self, params: dict) -> dict:
-        track = params.get("track", "Unknown")
-        return {"now_playing": track, "status": "playing"}
+        person_id = params.get("person_id")
+        query = params.get("track") or params.get("query") or ""
+        if not person_id:
+            return {"status": "error", "message": "missing person_id for Spotify playback"}
+        if not query:
+            return {"status": "error", "message": "missing track query"}
+
+        with Session(engine) as session:
+            access_token = get_valid_access_token(person_id, session)
+
+        if access_token is None:
+            return {
+                "status": "needs_spotify_auth",
+                "message": f"Connect Spotify first: /spotify/login?person_id={person_id}",
+                "person_id": person_id,
+            }
+
+        track = search_track(query, access_token)
+        if track is None:
+            return {"status": "no_match", "query": query}
+
+        queued = add_to_queue(track["uri"], access_token)
+        if not queued:
+            return {
+                "status": "queue_failed",
+                "track": track,
+                "message": "No active Spotify device found. Open Spotify on a phone or desktop first.",
+            }
+
+        return {"status": "queued", "track": track}
