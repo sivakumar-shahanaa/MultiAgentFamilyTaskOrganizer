@@ -61,6 +61,23 @@ def test_child_can_read_schedule_capability_without_hallucinated_events(client) 
     assert result.message == "You don't have anything scheduled."
 
 
+def test_read_schedule_capability_includes_day_and_time(client) -> None:
+    parent_id = _admit(client, "Schedule Parent", "Parent", "chris")
+    child_id = _admit(client, "Schedule Child", "Child", "spencer")
+    execute_capability(
+        _person(parent_id),
+        "write_schedule",
+        {"date": "2026-07-20", "time": "6pm", "title": "Soccer Practice"},
+    )
+
+    result = execute_capability(_person(child_id), "read_schedule", {})
+
+    assert result.decision == "allow"
+    assert "Soccer Practice" in result.message
+    assert "Monday" in result.message
+    assert "6:00 pm" in result.message
+
+
 def test_guest_can_use_weather_and_spotify_capabilities(client) -> None:
     person_id = _admit(client, "Guest One", "Guest", "guest")
     person = _person(person_id)

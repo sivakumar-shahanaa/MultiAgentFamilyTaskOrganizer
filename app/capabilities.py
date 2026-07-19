@@ -130,8 +130,8 @@ def _message_for_result(action_type: str, decision: str, result: dict | None) ->
         events = result.get("events", []) if isinstance(result, dict) else []
         if not events:
             return "You don't have anything scheduled."
-        event_titles = ", ".join(str(event.get("title", "Untitled")) for event in events)
-        return f"Your scheduled events are: {event_titles}."
+        event_descriptions = "; ".join(_format_schedule_event(event) for event in events)
+        return f"Your scheduled events are: {event_descriptions}."
 
     if action_type == "write_schedule" and isinstance(result, dict):
         if result.get("status") == "created":
@@ -159,6 +159,32 @@ def _message_for_result(action_type: str, decision: str, result: dict | None) ->
             return "I couldn't find that track on Spotify."
 
     return "Done."
+
+
+def _format_schedule_event(event: dict) -> str:
+    title = str(event.get("title") or "Untitled")
+    start_text = event.get("start_time")
+    end_text = event.get("end_time")
+    if not start_text:
+        return title
+
+    try:
+        start = datetime.fromisoformat(str(start_text))
+    except ValueError:
+        return f"{title} at {start_text}"
+
+    day = start.strftime("%A, %B %-d")
+    start_time = start.strftime("%-I:%M %p").lower()
+    if not end_text:
+        return f"{title} on {day} at {start_time}"
+
+    try:
+        end = datetime.fromisoformat(str(end_text))
+    except ValueError:
+        return f"{title} on {day} at {start_time}"
+
+    end_time = end.strftime("%-I:%M %p").lower()
+    return f"{title} on {day} from {start_time} to {end_time}"
 
 
 def _normalize_params(person: Person, action_type: str, params: dict) -> dict:
