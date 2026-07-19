@@ -72,7 +72,11 @@ def make_agent(persona_key: str) -> Agent:
             retries=2,
             # Qwen 3 enables a long reasoning trace by default. The chat UI
             # needs a prompt response and only consumes the final JSON action.
-            model_settings={"temperature": 0.3, "extra_body": {"think": False}},
+            model_settings={
+                "temperature": 0.3,
+                "max_tokens": 128,
+                "extra_body": {"think": False},
+            },
         )
     return _agents[persona_key]
 
