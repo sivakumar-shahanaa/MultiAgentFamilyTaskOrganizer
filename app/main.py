@@ -3,6 +3,12 @@ from uuid import UUID, uuid4
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 
+
+# Added for integrations
+from app.db.session import init_db
+from app.routers import household, actions
+##
+
 from app.llm import DEFAULT_MODEL, LocalChatAgent
 from app.schemas import (
     ChatMessage,
@@ -73,3 +79,13 @@ def _to_session_response(session: ChatSession) -> SessionResponse:
         created_at=session.created_at,
         message_count=len(session.messages),
     )
+
+
+# Added for integrations
+@app.on_event("startup")
+def on_startup() -> None:
+    init_db()
+
+app.include_router(household.router)
+app.include_router(actions.router)
+###
