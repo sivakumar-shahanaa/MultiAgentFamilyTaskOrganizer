@@ -73,7 +73,13 @@ def _get_model(name: str) -> OpenAIModel:
 
 # Single, module-level agent. Bound to the default model; per-user overrides are
 # passed to ``run(model=...)`` below.
-agent = Agent(_get_model(DEFAULT_MODEL), deps_type=AgentDeps)
+# Ollama's Qwen 3 models think by default. Disable that hidden reasoning trace
+# so interactive replies return promptly; the app only needs the final answer.
+agent = Agent(
+    _get_model(DEFAULT_MODEL),
+    deps_type=AgentDeps,
+    model_settings={"extra_body": {"think": False}},
+)
 
 
 @agent.instructions

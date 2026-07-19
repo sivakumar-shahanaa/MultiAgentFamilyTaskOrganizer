@@ -70,7 +70,9 @@ def make_agent(persona_key: str) -> Agent:
             instructions=PERSONAS[persona_key].system_prompt,
             output_type=TextOutput(parse_proposed_action),
             retries=2,
-            model_settings={"temperature": 0.3},
+            # Qwen 3 enables a long reasoning trace by default. The chat UI
+            # needs a prompt response and only consumes the final JSON action.
+            model_settings={"temperature": 0.3, "extra_body": {"think": False}},
         )
     return _agents[persona_key]
 
