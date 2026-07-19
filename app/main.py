@@ -1,7 +1,14 @@
+import html
+import secrets
+import socket
+import time
+from enum import Enum
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 from app.llm import DEFAULT_MODEL, LocalChatAgent
 from app.schemas import (
@@ -16,8 +23,224 @@ from app.schemas import (
 load_dotenv()
 
 app = FastAPI(title="MultiAgent Family Task Organizer API")
+engine = create_engine("sqlite:///family_task_organizer.db")
 
 _sessions: dict[UUID, ChatSession] = {}
+_person_sessions: dict[str, UUID] = {}
+
+
+class Role(str, Enum):
+    parent = "Parent"
+    child = "Child"
+    guest = "Guest"
+
+
+class AccessStatus(str, Enum):
+    pending = "Pending"
+    accepted = "Accepted"
+
+
+class Person(SQLModel, table=True):
+    id: str = Field(default_factory=lambda: _new_ulid(), primary_key=True)
+    name: str = Field(index=True)
+    role: Role
+
+
+class AccessRequest(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    name: str
+    status: AccessStatus = Field(default=AccessStatus.pending, index=True)
+    person_id: str | None = Field(default=None, foreign_key="person.id")
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    _reset_old_integer_person_schema()
+    SQLModel.metadata.create_all(engine)
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def login_page() -> str:
+    return _page(
+        "Sign in",
+        """
+        <section class="card">
+          <h1>Family Task Organizer</h1>
+          <p>Enter your name to request access.</p>
+          <form method="post" action="/login" class="stack">
+            <label>Name <input name="name" required autofocus /></label>
+            <button type="submit">Continue</button>
+          </form>
+        </section>
+        <script>
+          const personId = localStorage.getItem("person_id");
+          if (personId) window.location.href = `/chat?person_id=${personId}`;
+        </script>
+        """,
+    )
+
+
+@app.post("/login", include_in_schema=False)
+async def login(request: Request) -> RedirectResponse:
+    form = await request.form()
+    name = str(form.get("name", "")).strip()
+    if not name:
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+
+    with Session(engine) as session:
+        access_request = AccessRequest(name=name)
+        session.add(access_request)
+        session.commit()
+        session.refresh(access_request)
+        return RedirectResponse(
+            url=f"/waiting?request_id={access_request.id}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+
+@app.get("/waiting", response_class=HTMLResponse, include_in_schema=False)
+def waiting_page(request_id: int) -> str:
+    access_request = _get_access_request(request_id)
+    if access_request.person_id is not None:
+        return RedirectResponse(
+            url=f"/chat?person_id={access_request.person_id}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    return _page(
+        "Waiting for admission",
+        f"""
+        <section class="card">
+          <h1>Hi, {_escape(access_request.name)}</h1>
+          <p>Your access request is waiting for admin approval.</p>
+          <p><a href="/waiting?request_id={access_request.id}">Refresh</a></p>
+        </section>
+        <script>
+          async function checkAdmission() {{
+            const response = await fetch("/access-requests/{access_request.id}");
+            const data = await response.json();
+            if (data.person_id) {{
+              localStorage.setItem("person_id", data.person_id);
+              window.location.href = `/chat?person_id=${{data.person_id}}`;
+            }}
+          }}
+          setInterval(checkAdmission, 2000);
+          checkAdmission();
+        </script>
+        """,
+    )
+
+
+@app.get("/access-requests/{request_id}", include_in_schema=False)
+def access_request_status(request_id: int) -> dict[str, int | str | None]:
+    access_request = _get_access_request(request_id)
+    return {
+        "id": access_request.id,
+        "status": access_request.status.value,
+        "person_id": access_request.person_id,
+    }
+
+
+@app.get("/chat", response_class=HTMLResponse, include_in_schema=False)
+def chat_page(person_id: str) -> str:
+    person = _find_person(person_id)
+    if person is None:
+        return _reset_chat_page()
+    session = _get_or_create_person_session(person)
+    return _chat_page(person, session)
+
+
+@app.post("/chat/message", response_class=HTMLResponse, response_model=None, include_in_schema=False)
+async def chat_message(request: Request):
+    form = await request.form()
+    person_id = str(form.get("person_id", ""))
+    message = str(form.get("message", "")).strip()
+    person = _find_person(person_id)
+    if person is None:
+        return _reset_chat_page()
+    if not message:
+        return RedirectResponse(url=f"/chat?person_id={person.id}", status_code=status.HTTP_303_SEE_OTHER)
+
+    session = _get_or_create_person_session(person)
+    agent = LocalChatAgent(session.model, session.system_prompt)
+    user_message = ChatMessage(role="user", content=message)
+    reply_text = await agent.run(message, session.messages)
+    assistant_message = ChatMessage(role="assistant", content=reply_text)
+    session.messages.extend([user_message, assistant_message])
+    return _chat_page(person, session)
+
+
+@app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+def admin_page() -> str:
+    urls = _join_urls()
+    url_items = "".join(f'<li><a href="{url}/">{url}/</a></li>' for url in urls)
+
+    with Session(engine) as session:
+        pending = session.exec(select(AccessRequest).where(AccessRequest.status == AccessStatus.pending)).all()
+        people = session.exec(select(Person)).all()
+
+    pending_rows = "".join(_pending_request_row(access_request) for access_request in pending) or "<p>No pending people.</p>"
+    people_rows = "".join(_person_row(person) for person in people) or "<p>No admitted people yet.</p>"
+
+    return _page(
+        "Admin",
+        f"""
+        <section class="card">
+          <p class="status"><span class="dot"></span>API online</p>
+          <h1>Family Task Organizer Admin</h1>
+          <h2>People waiting</h2>
+          <div class="stack">{pending_rows}</div>
+          <h2>Admitted people</h2>
+          <div class="stack">{people_rows}</div>
+          <h2>User login URLs</h2>
+          <ul>{url_items}</ul>
+          <p class="links"><a href="/docs">API docs</a> · <a href="/health">Health check</a></p>
+        </section>
+        """,
+    )
+
+
+@app.post("/admin/admit", include_in_schema=False)
+async def admit_person(request: Request) -> RedirectResponse:
+    form = await request.form()
+    request_id = int(str(form.get("request_id", "0")))
+    role = Role(str(form.get("role", Role.child.value)))
+
+    with Session(engine) as session:
+        access_request = session.get(AccessRequest, request_id)
+        if access_request is not None and access_request.status == AccessStatus.pending:
+            person = Person(name=access_request.name, role=role)
+            session.add(person)
+            session.commit()
+            session.refresh(person)
+
+            access_request.person_id = person.id
+            access_request.status = AccessStatus.accepted
+            session.add(access_request)
+            session.commit()
+
+    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/people/delete", include_in_schema=False)
+async def delete_person(request: Request) -> RedirectResponse:
+    form = await request.form()
+    person_id = str(form.get("person_id", ""))
+
+    with Session(engine) as session:
+        person = session.get(Person, person_id)
+        if person is not None:
+            access_requests = session.exec(select(AccessRequest).where(AccessRequest.person_id == person_id)).all()
+            for access_request in access_requests:
+                session.delete(access_request)
+            session.delete(person)
+            session.commit()
+
+    session_id = _person_sessions.pop(person_id, None)
+    if session_id is not None:
+        _sessions.pop(session_id, None)
+
+    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get("/health")
@@ -56,6 +279,214 @@ async def send_message(session_id: UUID, request: SendMessageRequest) -> SendMes
         reply=assistant_message,
         messages=session.messages,
     )
+
+
+def _chat_page(person: Person, session: ChatSession) -> str:
+    messages = "".join(
+        f'<div class="message {message.role}"><strong>{_escape(message.role)}:</strong> {_escape(message.content)}</div>'
+        for message in session.messages
+    ) or "<p>No messages yet.</p>"
+    return _page(
+        "Chat",
+        f"""
+        <section class="card chat">
+          <h1>Hi, {_escape(person.name)}</h1>
+          <p>Role: {_escape(person.role.value)}</p>
+          <div class="messages">{messages}</div>
+          <form method="post" action="/chat/message" class="stack">
+            <input type="hidden" name="person_id" value="{person.id}" />
+            <label>Message <textarea name="message" rows="3" required autofocus></textarea></label>
+            <button type="submit">Send</button>
+          </form>
+        </section>
+        <script>localStorage.setItem("person_id", "{person.id}");</script>
+        """,
+    )
+
+
+def _get_or_create_person_session(person: Person) -> ChatSession:
+    session_id = _person_sessions.get(person.id)
+    if session_id is not None and session_id in _sessions:
+        return _sessions[session_id]
+
+    chat_session = ChatSession(
+        id=uuid4(),
+        model=DEFAULT_MODEL,
+        system_prompt=f"You are helping {person.name}, whose household role is {person.role.value}.",
+    )
+    _sessions[chat_session.id] = chat_session
+    _person_sessions[person.id] = chat_session.id
+    return chat_session
+
+
+def _person_row(person: Person) -> str:
+    return f"""
+    <form method="post" action="/admin/people/delete" class="person-row">
+      <input type="hidden" name="person_id" value="{person.id}" />
+      <span><strong>{_escape(person.name)}</strong><br /><small>{_escape(person.id)}</small></span>
+      <span>{_escape(person.role.value)}</span>
+      <button type="submit" class="danger">Delete</button>
+    </form>
+    """
+
+
+def _pending_request_row(access_request: AccessRequest) -> str:
+    role_options = "".join(f'<option value="{role.value}">{role.value}</option>' for role in Role)
+    return f"""
+    <form method="post" action="/admin/admit" class="person-row">
+      <input type="hidden" name="request_id" value="{access_request.id}" />
+      <strong>{_escape(access_request.name)}</strong>
+      <select name="role">{role_options}</select>
+      <button type="submit">Admit</button>
+    </form>
+    """
+
+
+def _find_person(person_id: str) -> Person | None:
+    with Session(engine) as session:
+        return session.get(Person, person_id)
+
+
+def _get_person(person_id: str) -> Person:
+    person = _find_person(person_id)
+    if person is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
+    return person
+
+
+def _get_access_request(request_id: int) -> AccessRequest:
+    with Session(engine) as session:
+        access_request = session.get(AccessRequest, request_id)
+        if access_request is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Access request not found")
+        return access_request
+
+
+def _reset_chat_page() -> str:
+    return _page(
+        "Chat reset",
+        """
+        <section class="card">
+          <h1>Chat reset</h1>
+          <p>Your user was removed by the admin. Please enter your name again to request access.</p>
+          <p><a href="/">Return to login</a></p>
+        </section>
+        <script>localStorage.removeItem("person_id");</script>
+        """,
+    )
+
+
+def _new_ulid() -> str:
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    value = (int(time.time() * 1000) << 80) | secrets.randbits(80)
+    chars = []
+    for _ in range(26):
+        chars.append(alphabet[value & 31])
+        value >>= 5
+    return "".join(reversed(chars))
+
+
+def _reset_old_integer_person_schema() -> None:
+    with engine.begin() as connection:
+        columns = connection.exec_driver_sql("PRAGMA table_info(person)").fetchall()
+        id_columns = [column for column in columns if column[1] == "id"]
+        if id_columns and "INT" in str(id_columns[0][2]).upper():
+            connection.exec_driver_sql("DROP TABLE IF EXISTS accessrequest")
+            connection.exec_driver_sql("DROP TABLE IF EXISTS person")
+
+
+def _join_urls() -> list[str]:
+    urls = ["http://localhost:8000"]
+    hostname = socket.gethostname().removesuffix(".local")
+    if hostname:
+        urls.append(f"http://{hostname}.local:8000")
+
+    ips: set[str] = set()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            ips.add(sock.getsockname()[0])
+    except OSError:
+        pass
+
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                ips.add(ip)
+    except OSError:
+        pass
+
+    urls.extend(f"http://{ip}:8000" for ip in sorted(ips))
+    return list(dict.fromkeys(urls))
+
+
+def _page(title: str, body: str) -> str:
+    return f"""
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <title>{_escape(title)} - Family Task Organizer</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <style>
+          :root {{ color-scheme: light dark; }}
+          body {{
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            margin: 0;
+            line-height: 1.5;
+            background: #f6f7f9;
+            color: #18202a;
+          }}
+          main {{ max-width: 48rem; margin: 0 auto; padding: 2rem; }}
+          .card {{
+            background: white;
+            border: 1px solid #dde2e8;
+            border-radius: 1rem;
+            box-shadow: 0 1rem 2.5rem rgb(15 23 42 / 8%);
+            padding: 1.5rem;
+          }}
+          .stack {{ display: grid; gap: 0.75rem; }}
+          label {{ display: grid; gap: 0.35rem; font-weight: 700; }}
+          input, textarea, select, button {{ font: inherit; border-radius: 0.5rem; padding: 0.65rem; }}
+          input, textarea, select {{ border: 1px solid #cbd5e1; }}
+          button {{ border: 0; background: #2563eb; color: white; font-weight: 700; cursor: pointer; }}
+          button.danger {{ background: #dc2626; }}
+          h1 {{ margin-top: 0; }}
+          .status {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            border-radius: 999px;
+            background: #e8f7ee;
+            color: #166534;
+            font-weight: 700;
+            padding: 0.35rem 0.75rem;
+          }}
+          .dot {{ width: 0.6rem; height: 0.6rem; border-radius: 50%; background: currentColor; }}
+          .links {{ margin-top: 1.5rem; }}
+          .person-row {{ display: grid; grid-template-columns: 1fr 1fr auto; gap: 0.5rem; align-items: center; }}
+          .messages {{ display: grid; gap: 0.5rem; margin: 1rem 0; }}
+          .message {{ border-radius: 0.75rem; padding: 0.75rem; background: #f1f5f9; }}
+          .message.assistant {{ background: #e0f2fe; }}
+          a {{ color: #2563eb; }}
+          @media (prefers-color-scheme: dark) {{
+            body {{ background: #0f172a; color: #e5e7eb; }}
+            .card {{ background: #111827; border-color: #263244; }}
+            input, textarea, select {{ background: #0f172a; border-color: #334155; color: #e5e7eb; }}
+            .status {{ background: #052e16; color: #86efac; }}
+            .message {{ background: #1e293b; }}
+            .message.assistant {{ background: #172554; }}
+            a {{ color: #93c5fd; }}
+          }}
+        </style>
+      </head>
+      <body><main>{body}</main></body>
+    </html>
+    """
+
+
+def _escape(value: object) -> str:
+    return html.escape(str(value), quote=True)
 
 
 def _get_session(session_id: UUID) -> ChatSession:
