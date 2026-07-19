@@ -30,7 +30,7 @@ def test_parent_can_write_schedule_from_chat(client, monkeypatch) -> None:
 
     assert "Added that to the schedule." in response.text
     assert "Action executed: write_schedule" in response.text
-    with Session(main.household_engine) as session:
+    with Session(main.engine) as session:
         events = session.exec(select(CalendarEvent)).all()
     assert len(events) == 1
     assert events[0].title == "Soccer Practice"
