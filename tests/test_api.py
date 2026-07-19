@@ -52,6 +52,35 @@ def test_update_persona(client, make_user):
     assert updated["persona"] == "chris"
 
 
+def test_create_user_rejects_persona_for_another_role(client):
+    response = client.post(
+        "/users", json={"name": "Alex", "role": "Parent", "persona": "marta"}
+    )
+
+    assert response.status_code == 422
+    assert "not valid for Parent" in response.json()["detail"]
+
+
+def test_changing_role_resets_an_incompatible_persona(client, make_user):
+    _, headers, _ = make_user("Alex", role="Child", persona="marta")
+
+    response = client.patch("/users/me", headers=headers, json={"role": "Parent"})
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "Parent"
+    assert response.json()["persona"] == "julie"
+
+
+def test_update_rejects_a_persona_for_another_role(client, make_user):
+    _, headers, _ = make_user("Alex", role="Guest", persona="guest")
+
+    response = client.patch(
+        "/users/me", headers=headers, json={"role": "Parent", "persona": "spencer"}
+    )
+
+    assert response.status_code == 422
+
+
 def test_roster_lists_users_without_tokens(client, make_user):
     make_user("Alex")
     make_user("Bailey")

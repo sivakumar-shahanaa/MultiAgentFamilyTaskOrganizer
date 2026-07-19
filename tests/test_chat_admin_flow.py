@@ -65,6 +65,33 @@ def test_admin_admit_creates_ulid_person_with_role(client: TestClient) -> None:
         assert person.persona == main.PersonaKey.guest
 
 
+def test_admin_admit_corrects_a_persona_for_another_role(client: TestClient) -> None:
+    login_response = client.post("/login", data={"name": "Alice"}, follow_redirects=False)
+    request_id = login_response.headers["location"].split("=")[1]
+
+    client.post(
+        "/admin/admit",
+        data={"request_id": request_id, "role": "Parent", "persona": "marta"},
+    )
+
+    person_id = client.get(f"/access-requests/{request_id}").json()["person_id"]
+    with Session(main.engine) as session:
+        person = session.get(main.Person, person_id)
+        assert person is not None
+        assert person.role == main.Role.parent
+        assert person.persona == main.PersonaKey.julie
+
+
+def test_admin_admission_form_filters_personas_by_role(client: TestClient) -> None:
+    client.post("/login", data={"name": "Alice"}, follow_redirects=False)
+
+    page = client.get("/admin").text
+
+    assert 'Parent: ["chris", "julie"]' in page
+    assert 'Child: ["spencer", "marta"]' in page
+    assert 'Guest: ["guest"]' in page
+
+
 def test_deleted_person_resets_chat(client: TestClient) -> None:
     login_response = client.post("/login", data={"name": "Alice"}, follow_redirects=False)
     request_id = login_response.headers["location"].split("=")[1]
