@@ -1,11 +1,13 @@
 import html
 import socket
 from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, select
 
@@ -24,7 +26,7 @@ from app.db import (
 )
 from app.db.seed import seed as seed_household_defaults
 from app.db.session import init_db as init_household_db
-from app.routers import actions, household, spotify_auth
+from app.routers import actions, chat_api, household, spotify_auth
 from pydantic_ai.exceptions import ModelAPIError
 
 from app.agents import run_turn
@@ -701,3 +703,8 @@ def _to_session_response(session: ChatSession) -> SessionResponse:
 app.include_router(household.router)
 app.include_router(actions.router)
 app.include_router(spotify_auth.router)
+app.include_router(chat_api.router)
+
+_frontend_dist = Path(__file__).resolve().parent.parent / "frontends" / "chat" / "dist"
+if _frontend_dist.exists():
+    app.mount("/app", StaticFiles(directory=_frontend_dist, html=True), name="avatar-frontend")
