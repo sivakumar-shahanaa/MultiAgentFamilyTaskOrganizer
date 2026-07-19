@@ -10,7 +10,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from app.capabilities import household_capability
+from app.capabilities import CapabilityResult, household_capability
 from app.db import Person
 from app.personas import PERSONAS
 
@@ -24,6 +24,8 @@ API_KEY = os.getenv("LOCAL_LLM_API_KEY", "ollama")
 @dataclass
 class AgentDeps:
     person: Person
+    last_capability_message: str | None = None
+    last_capability_result: CapabilityResult | None = None
 
 
 _agents: dict[str, Agent[AgentDeps, str]] = {}
@@ -59,5 +61,8 @@ async def run_turn(
     if history:
         transcript = "\n".join(f"{m['role']}: {m['content']}" for m in history)
         prompt = f"Conversation so far:\n{transcript}\n\nuser: {user_text}"
-    result = await agent.run(prompt, deps=AgentDeps(person=person))
+    deps = AgentDeps(person=person)
+    result = await agent.run(prompt, deps=deps)
+    if deps.last_capability_message is not None:
+        return deps.last_capability_message
     return str(result.output if hasattr(result, "output") else result.data)

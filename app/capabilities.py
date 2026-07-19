@@ -63,19 +63,19 @@ def household_capability() -> Capability[Any]:
 def get_weather(ctx: RunContext[Any], location: str = "home") -> dict:
     """Get weather for a location. Everyone can use this."""
     person = _require_person(ctx)
-    return execute_capability(person, "weather", {"location": location}).model_dump()
+    return _record_result(ctx, execute_capability(person, "weather", {"location": location}))
 
 
 def play_spotify(ctx: RunContext[Any], track: str) -> dict:
     """Play a Spotify track. Everyone can use this."""
     person = _require_person(ctx)
-    return execute_capability(person, "spotify_play", {"track": track}).model_dump()
+    return _record_result(ctx, execute_capability(person, "spotify_play", {"track": track}))
 
 
 def read_schedule(ctx: RunContext[Any]) -> dict:
     """Read calendar/schedule events. Parents and children can use this."""
     person = _require_person(ctx)
-    return execute_capability(person, "read_schedule", {}).model_dump()
+    return _record_result(ctx, execute_capability(person, "read_schedule", {}))
 
 
 def write_schedule(
@@ -88,17 +88,20 @@ def write_schedule(
 ) -> dict:
     """Create a calendar event. Only parents can use this."""
     person = _require_person(ctx)
-    return execute_capability(
-        person,
-        "write_schedule",
-        {
-            "title": title,
-            "day": day,
-            "time": time,
-            "start_time": start_time,
-            "end_time": end_time,
-        },
-    ).model_dump()
+    return _record_result(
+        ctx,
+        execute_capability(
+            person,
+            "write_schedule",
+            {
+                "title": title,
+                "day": day,
+                "time": time,
+                "start_time": start_time,
+                "end_time": end_time,
+            },
+        ),
+    )
 
 
 def execute_capability(person: Person, action_type: str, params: dict) -> CapabilityResult:
@@ -182,6 +185,14 @@ def _normalize_params(person: Person, action_type: str, params: dict) -> dict:
             "visible_to": schedule.visible_to,
         }
     return params
+
+
+def _record_result(ctx: RunContext[Any], result: CapabilityResult) -> dict:
+    if hasattr(ctx.deps, "last_capability_message"):
+        ctx.deps.last_capability_message = result.message
+    if hasattr(ctx.deps, "last_capability_result"):
+        ctx.deps.last_capability_result = result
+    return result.model_dump()
 
 
 def _require_person(ctx: RunContext[Any]) -> Person:
