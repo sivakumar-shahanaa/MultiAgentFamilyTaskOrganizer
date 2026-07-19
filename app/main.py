@@ -213,6 +213,25 @@ def admin_page() -> str:
           <ul>{url_items}</ul>
           <p class="links"><a href="/docs">API docs</a> · <a href="/health">Health check</a></p>
         </section>
+        <script>
+          const personasByRole = {{
+            Parent: ["chris", "julie"],
+            Child: ["spencer", "marta"],
+            Guest: ["guest"],
+          }};
+          document.querySelectorAll("form[action='/admin/admit']").forEach((form) => {{
+            const role = form.querySelector("select[name='role']");
+            const persona = form.querySelector("select[name='persona']");
+            const updatePersonas = () => {{
+              persona.replaceChildren(...personasByRole[role.value].map((key) => {{
+                const option = new Option(key, key);
+                return option;
+              }}));
+            }};
+            role.addEventListener("change", updatePersonas);
+            updatePersonas();
+          }});
+        </script>
         """,
     )
 
@@ -232,6 +251,8 @@ async def admit_person(request: Request) -> RedirectResponse:
             try:
                 persona = PersonaKey(str(form.get("persona") or _default_persona_for_role(role).value))
             except ValueError:
+                persona = _default_persona_for_role(role)
+            if not _persona_matches_role(persona, role):
                 persona = _default_persona_for_role(role)
             person = Person(name=access_request.name, role=role, persona=persona)
             session.add(person)
@@ -276,6 +297,7 @@ def health() -> dict[str, str]:
 def create_user(request: CreateUserRequest, session: Session = Depends(get_user_session)) -> Person:
     role = Role(request.role) if request.role is not None else Role.guest
     persona = request.persona or _default_persona_for_role(role)
+    _require_matching_persona(persona, role)
     person = Person(name=request.name, role=role, persona=persona, model=request.model)
     session.add(person)
     try:
@@ -304,6 +326,12 @@ def update_me(
     session: Session = Depends(get_user_session),
 ) -> Person:
     data = request.model_dump(exclude_unset=True)
+    role = data.get("role", person.role)
+    persona = data.get("persona", person.persona)
+    if "role" in data and "persona" not in data and not _persona_matches_role(persona, role):
+        data["persona"] = _default_persona_for_role(role)
+    else:
+        _require_matching_persona(persona, role)
     for key, value in data.items():
         setattr(person, key, value)
     session.add(person)
@@ -484,6 +512,27 @@ def _default_persona_for_role(role: Role) -> PersonaKey:
     return PersonaKey.guest
 
 
+def _personas_for_role(role: Role) -> tuple[PersonaKey, ...]:
+    if role == Role.parent:
+        return (PersonaKey.chris, PersonaKey.julie)
+    if role == Role.child:
+        return (PersonaKey.spencer, PersonaKey.marta)
+    return (PersonaKey.guest,)
+
+
+def _persona_matches_role(persona: PersonaKey, role: Role) -> bool:
+    return persona in _personas_for_role(role)
+
+
+def _require_matching_persona(persona: PersonaKey, role: Role) -> None:
+    if not _persona_matches_role(persona, role):
+        allowed = ", ".join(item.value for item in _personas_for_role(role))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Persona '{persona.value}' is not valid for {role.value}. Choose one of: {allowed}.",
+        )
+
+
 def _persona_key_for_person(person: Person) -> str:
     return person.persona.value
 
@@ -516,13 +565,16 @@ def _person_row(person: Person) -> str:
 
 def _pending_request_row(access_request: AccessRequest) -> str:
     role_options = "".join(f'<option value="{role.value}">{role.value}</option>' for role in Role)
-    persona_options = "".join(f'<option value="{persona.value}">{persona.value}</option>' for persona in PersonaKey)
+    persona_options = "".join(
+        f'<option value="{persona.value}">{persona.value}</option>'
+        for persona in _personas_for_role(Role.parent)
+    )
     return f"""
     <form method="post" action="/admin/admit" class="person-row">
       <input type="hidden" name="request_id" value="{access_request.id}" />
       <strong>{_escape(access_request.name)}</strong>
-      <select name="role">{role_options}</select>
-      <select name="persona">{persona_options}</select>
+      <select name="role" aria-label="Role">{role_options}</select>
+      <select name="persona" aria-label="Persona">{persona_options}</select>
       <button type="submit">Admit</button>
     </form>
     """
