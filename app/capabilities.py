@@ -145,11 +145,13 @@ def _message_for_result(action_type: str, decision: str, result: dict | None) ->
     if action_type == "spotify_play" and isinstance(result, dict):
         if result.get("status") == "queued":
             track = result.get("track", {})
-            return f"Queued {track.get('name')} by {track.get('artist')}."
+            device = result.get("device")
+            suffix = f" on {device}" if device else ""
+            return f"Queued {track.get('name')} by {track.get('artist')}{suffix}."
         if result.get("status") == "needs_spotify_auth":
             return result.get("message", "Connect Spotify first.")
-        if result.get("status") == "queue_failed":
-            return result.get("message", "No active Spotify device found.")
+        if result.get("status") in {"queue_failed", "no_device"}:
+            return result.get("message", "No Spotify device found.")
         if result.get("status") == "no_match":
             return "I couldn't find that track on Spotify."
 

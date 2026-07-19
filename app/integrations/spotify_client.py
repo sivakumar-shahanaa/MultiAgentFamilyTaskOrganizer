@@ -100,11 +100,34 @@ def search_track(query: str, access_token: str) -> dict | None:
         }
 
 
-def add_to_queue(track_uri: str, access_token: str) -> bool:
+def get_available_devices(access_token: str) -> list[dict]:
+    with httpx.Client(timeout=20) as client:
+        response = client.get(
+            f"{API_BASE}/me/player/devices",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        response.raise_for_status()
+        return response.json().get("devices", [])
+
+
+def transfer_playback(device_id: str, access_token: str) -> bool:
+    with httpx.Client(timeout=20) as client:
+        response = client.put(
+            f"{API_BASE}/me/player",
+            json={"device_ids": [device_id], "play": False},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        return response.status_code in {202, 204}
+
+
+def add_to_queue(track_uri: str, access_token: str, device_id: str | None = None) -> bool:
+    params = {"uri": track_uri}
+    if device_id is not None:
+        params["device_id"] = device_id
     with httpx.Client(timeout=20) as client:
         response = client.post(
             f"{API_BASE}/me/player/queue",
-            params={"uri": track_uri},
+            params=params,
             headers={"Authorization": f"Bearer {access_token}"},
         )
         return response.status_code == 204

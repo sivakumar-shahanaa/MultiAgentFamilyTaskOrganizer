@@ -84,7 +84,13 @@ def test_spotify_capability_queues_track_with_connected_account(client, monkeypa
         "search_track",
         lambda query, token: {"uri": "spotify:track:1", "name": "Espresso", "artist": "Sabrina Carpenter"},
     )
-    monkeypatch.setattr(spotify_integration, "add_to_queue", lambda uri, token: True)
+    monkeypatch.setattr(
+        spotify_integration,
+        "get_available_devices",
+        lambda token: [{"id": "device-1", "name": "Kitchen Speaker", "is_active": False}],
+    )
+    monkeypatch.setattr(spotify_integration, "transfer_playback", lambda device_id, token: True)
+    monkeypatch.setattr(spotify_integration, "add_to_queue", lambda uri, token, device_id=None: True)
 
     spotify = execute_capability(person, "spotify_play", {"track": "Espresso"})
 
@@ -92,8 +98,10 @@ def test_spotify_capability_queues_track_with_connected_account(client, monkeypa
     assert spotify.result == {
         "status": "queued",
         "track": {"uri": "spotify:track:1", "name": "Espresso", "artist": "Sabrina Carpenter"},
+        "device": "Kitchen Speaker",
+        "activated_device": True,
     }
-    assert spotify.message == "Queued Espresso by Sabrina Carpenter."
+    assert spotify.message == "Queued Espresso by Sabrina Carpenter on Kitchen Speaker."
 
 
 def test_chat_uses_plain_text_agent_reply(client, monkeypatch) -> None:
