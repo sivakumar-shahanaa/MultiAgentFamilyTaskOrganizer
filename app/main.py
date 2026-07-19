@@ -28,6 +28,8 @@ from app.db.session import init_db as init_household_db
 from app.integrations.registry import run_action
 from app.permissions.gate import check_permission, log_action
 from app.routers import actions, household
+from pydantic_ai.exceptions import ModelAPIError
+
 from app.agents import run_turn
 from app.personas import PERSONAS
 from app.llm import DEFAULT_MODEL, history_to_display, run_chat
@@ -167,14 +169,20 @@ async def chat_message(request: Request):
         return RedirectResponse(url=f"/chat?person_id={person.id}", status_code=status.HTTP_303_SEE_OTHER)
 
     session = _get_or_create_person_session(person)
-    proposed_action = await run_turn(
-        _persona_key_for_person(person),
-        message,
-        [{"role": item.role, "content": item.content} for item in session.messages],
-    )
-    action_note = _execute_proposed_action(person, proposed_action.action, proposed_action.params)
     user_message = ChatMessage(role="user", content=message)
-    assistant_message = ChatMessage(role="assistant", content=proposed_action.reply + action_note)
+    try:
+        proposed_action = await run_turn(
+            _persona_key_for_person(person),
+            message,
+            [{"role": item.role, "content": item.content} for item in session.messages],
+        )
+        action_note = _execute_proposed_action(person, proposed_action.action, proposed_action.params)
+        assistant_message = ChatMessage(role="assistant", content=proposed_action.reply + action_note)
+    except ModelAPIError:
+        assistant_message = ChatMessage(
+            role="assistant",
+            content="I couldn't reach the local language model. Please make sure Ollama is running and try again.",
+        )
     session.messages.extend([user_message, assistant_message])
     return _chat_page(person, session)
 
