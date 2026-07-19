@@ -5,9 +5,9 @@ from app.models import Profile, PermissionRule
 
 
 DEFAULT_PROFILES = [
-    Profile(id="parent_1", persona="parent", display_name="Parent"),
-    Profile(id="kid_1", persona="kid", display_name="Kid"),
-    Profile(id="guest_1", persona="guest", display_name="Guest"),
+    {"id": "parent_1", "persona": "parent", "display_name": "Parent"},
+    {"id": "kid_1", "persona": "kid", "display_name": "Kid"},
+    {"id": "guest_1", "persona": "guest", "display_name": "Guest"},
 ]
 
 DEFAULT_RULES = [
@@ -33,9 +33,9 @@ def seed() -> None:
     init_db()
     with Session(engine) as session:
         for profile in DEFAULT_PROFILES:
-            existing = session.get(Profile, profile.id)
+            existing = session.get(Profile, profile["id"])
             if not existing:
-                session.add(profile)
+                session.add(Profile(**profile))
 
         for persona, action_type, decision in DEFAULT_RULES:
             stmt = select(PermissionRule).where(
