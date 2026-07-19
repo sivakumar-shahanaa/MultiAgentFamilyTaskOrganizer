@@ -2,6 +2,7 @@ import html
 import secrets
 import socket
 import time
+from contextlib import asynccontextmanager
 from enum import Enum
 from uuid import UUID, uuid4
 
@@ -22,8 +23,16 @@ from app.schemas import (
 
 load_dotenv()
 
-app = FastAPI(title="MultiAgent Family Task Organizer API")
 engine = create_engine("sqlite:///family_task_organizer.db")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    SQLModel.metadata.create_all(engine)
+    yield
+
+
+app = FastAPI(title="MultiAgent Family Task Organizer API", lifespan=lifespan)
 
 _sessions: dict[UUID, ChatSession] = {}
 _person_sessions: dict[str, UUID] = {}
@@ -51,12 +60,6 @@ class AccessRequest(SQLModel, table=True):
     name: str
     status: AccessStatus = Field(default=AccessStatus.pending, index=True)
     person_id: str | None = Field(default=None, foreign_key="person.id")
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    _reset_old_integer_person_schema()
-    SQLModel.metadata.create_all(engine)
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -98,8 +101,8 @@ async def login(request: Request) -> RedirectResponse:
         )
 
 
-@app.get("/waiting", response_class=HTMLResponse, include_in_schema=False)
-def waiting_page(request_id: int) -> str:
+@app.get("/waiting", response_class=HTMLResponse, response_model=None, include_in_schema=False)
+def waiting_page(request_id: int):
     access_request = _get_access_request(request_id)
     if access_request.person_id is not None:
         return RedirectResponse(
@@ -204,7 +207,10 @@ def admin_page() -> str:
 async def admit_person(request: Request) -> RedirectResponse:
     form = await request.form()
     request_id = int(str(form.get("request_id", "0")))
-    role = Role(str(form.get("role", Role.child.value)))
+    try:
+        role = Role(str(form.get("role") or Role.child.value))
+    except ValueError:
+        role = Role.child
 
     with Session(engine) as session:
         access_request = session.get(AccessRequest, request_id)
@@ -347,13 +353,6 @@ def _find_person(person_id: str) -> Person | None:
         return session.get(Person, person_id)
 
 
-def _get_person(person_id: str) -> Person:
-    person = _find_person(person_id)
-    if person is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Person not found")
-    return person
-
-
 def _get_access_request(request_id: int) -> AccessRequest:
     with Session(engine) as session:
         access_request = session.get(AccessRequest, request_id)
@@ -385,14 +384,6 @@ def _new_ulid() -> str:
         value >>= 5
     return "".join(reversed(chars))
 
-
-def _reset_old_integer_person_schema() -> None:
-    with engine.begin() as connection:
-        columns = connection.exec_driver_sql("PRAGMA table_info(person)").fetchall()
-        id_columns = [column for column in columns if column[1] == "id"]
-        if id_columns and "INT" in str(id_columns[0][2]).upper():
-            connection.exec_driver_sql("DROP TABLE IF EXISTS accessrequest")
-            connection.exec_driver_sql("DROP TABLE IF EXISTS person")
 
 
 def _join_urls() -> list[str]:
