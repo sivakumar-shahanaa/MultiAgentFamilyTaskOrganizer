@@ -1,4 +1,7 @@
+from sqlmodel import Session, select
+
 from app.contracts import ProposedAction
+from app.models import CalendarEvent
 import app.main as main
 
 
@@ -17,12 +20,21 @@ def test_parent_can_write_schedule_from_chat(client, monkeypatch) -> None:
     person_id = _admit(client, "Parent One", "Parent", "julie")
 
     async def fake_run_turn(*args, **kwargs):
-        return await _propose("write_schedule", {"action": "list"})
+        return await _propose(
+            "write_schedule",
+            {"day": "Monday", "time": "6pm", "title": "Soccer Practice"},
+        )
 
     monkeypatch.setattr(main, "run_turn", fake_run_turn)
-    response = client.post("/chat/message", data={"person_id": person_id, "message": "Update the schedule"})
+    response = client.post("/chat/message", data={"person_id": person_id, "message": "Add soccer Monday at 6"})
 
+    assert "Added that to the schedule." in response.text
     assert "Action executed: write_schedule" in response.text
+    with Session(main.household_engine) as session:
+        events = session.exec(select(CalendarEvent)).all()
+    assert len(events) == 1
+    assert events[0].title == "Soccer Practice"
+    assert events[0].owner_id == person_id
 
 
 def test_child_cannot_write_schedule_from_chat(client, monkeypatch) -> None:
