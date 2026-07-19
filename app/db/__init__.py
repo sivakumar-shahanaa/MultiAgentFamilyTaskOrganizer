@@ -87,6 +87,57 @@ User = Person
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
+    _ensure_identity_schema()
+
+
+def _ensure_identity_schema() -> None:
+    """Small SQLite-only migration for prototype DBs created before Person grew.
+
+    This is non-destructive: it only adds missing nullable/defaulted columns.
+    """
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+
+    with engine.begin() as connection:
+        tables = {
+            row[0]
+            for row in connection.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "person" in tables:
+            columns = {
+                row[1]
+                for row in connection.exec_driver_sql("PRAGMA table_info(person)").fetchall()
+            }
+            if "persona" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE person ADD COLUMN persona VARCHAR NOT NULL DEFAULT 'guest'"
+                )
+            if "token" not in columns:
+                connection.exec_driver_sql("ALTER TABLE person ADD COLUMN token VARCHAR")
+                rows = connection.exec_driver_sql("SELECT id FROM person WHERE token IS NULL").fetchall()
+                for row in rows:
+                    connection.exec_driver_sql(
+                        "UPDATE person SET token = ? WHERE id = ?",
+                        (_new_token(), row[0]),
+                    )
+            if "model" not in columns:
+                connection.exec_driver_sql("ALTER TABLE person ADD COLUMN model VARCHAR")
+            if "created_at" not in columns:
+                connection.exec_driver_sql("ALTER TABLE person ADD COLUMN created_at DATETIME")
+                connection.exec_driver_sql(
+                    "UPDATE person SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"
+                )
+
+        if "conversation" in tables:
+            columns = {
+                row[1]
+                for row in connection.exec_driver_sql("PRAGMA table_info(conversation)").fetchall()
+            }
+            if "person_id" not in columns and "user_id" in columns:
+                connection.exec_driver_sql("ALTER TABLE conversation ADD COLUMN person_id VARCHAR")
+                connection.exec_driver_sql("UPDATE conversation SET person_id = CAST(user_id AS TEXT)")
 
 
 def get_session() -> Iterator[Session]:
