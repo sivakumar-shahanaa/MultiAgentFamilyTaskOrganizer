@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import Blob, { SHAPES } from "./components/Blob.jsx";
 import AvatarPicker from "./components/AvatarPicker.jsx";
 import Chat from "./components/Chat.jsx";
+import { readJsonResponse } from "./lib/api.js";
 
 /* Phone-first flow:
    #/            join: enter name -> wait for a parent to admit -> pick avatar
@@ -66,7 +67,7 @@ function Join({ onJoined }) {
     if (!reqId) return;
     const t = setInterval(async () => {
       try {
-        const d = await (await fetch(`/access-requests/${reqId}`)).json();
+        const d = await readJsonResponse(await fetch(`/access-requests/${reqId}`));
         if (d.person_id) {
           clearInterval(t);
           onJoined(d.person_id);
@@ -132,7 +133,7 @@ export default function App() {
 
   const loadPeople = useCallback(() => {
     fetch("/api/people")
-      .then((r) => r.json())
+      .then(readJsonResponse)
       .then(setPeople)
       .catch((e) => setError(String(e)));
   }, []);

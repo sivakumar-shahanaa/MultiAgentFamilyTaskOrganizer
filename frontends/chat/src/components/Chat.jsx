@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import Blob from "./Blob.jsx";
+import { readJsonResponse } from "../lib/api.js";
 
 const CHIP = {
   allow:    { label: "allowed",  icon: "✓", cls: "bg-emerald-100 text-emerald-700" },
@@ -44,8 +45,8 @@ export default function Chat({ person, shape, compact = false }) {
           const fd = new FormData();
           fd.append("audio", new Blob(chunks, { type: mime }), mime.includes("mp4") ? "clip.mp4" : "clip.webm");
           const res = await fetch("/api/transcribe", { method: "POST", body: fd });
-          if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
-          const d = await res.json();
+          const d = await readJsonResponse(res);
+          if (!res.ok) throw new Error(d?.detail || res.statusText);
           if (d.text) {
             setInput((prev) => (prev ? prev + " " : "") + d.text);
             setMood("listening");
@@ -86,8 +87,8 @@ export default function Chat({ person, shape, compact = false }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ person_id: person.id, message: text }),
       });
-      if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
-      const data = await res.json();
+      const data = await readJsonResponse(res);
+      if (!res.ok) throw new Error(data?.detail || res.statusText);
 
       const verdictMood = data.action === "none" ? "speaking" : ({ allow: "allow", deny: "deny", escalate: "escalate" }[data.decision] || "speaking");
       setMood(verdictMood);
